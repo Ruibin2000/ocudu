@@ -1,9 +1,41 @@
 # SPDX-FileCopyrightText: Copyright (C) 2021-2026 Software Radio Systems Limited
 # SPDX-License-Identifier: BSD-3-Clause-Open-MPI
 
-# Reminder: this file should only be used to ignore files generated as part of the project build
-# (i.e., files that all developers will want to ignore). Please use $OCUDU_DIR/.git/info/exclude
-# or $XDG_CONFIG_HOME/git/ignore for auxiliary files inside the repository that are specific of
-# one user's workflow (e.g., build folders). See also https://git-scm.com/docs/gitignore).
+# Ignore build artifacts and backups.
+# Use $OCUDU_DIR/.git/info/exclude or $XDG_CONFIG_HOME/git/ignore for other
+# user-specific auxiliary files. See https://git-scm.com/docs/gitignore.
 
 /utils/gdb/python/ocudu/__pycache__
+
+# Local CMake build directories
+/build/
+/build-*/
+/build_*/
+/cmake-build-*/
+
+# Generated CMake and Ninja metadata
+CMakeFiles/
+CMakeCache.txt
+cmake_install.cmake
+CTestTestfile.cmake
+install_manifest.txt
+compile_commands.json
+build.ninja
+.ninja_deps
+.ninja_log
+
+# Compiled objects, libraries and coverage files
+*.o
+*.obj
+*.a
+*.so
+*.so.*
+*.dylib
+*.dll
+*.lib
+*.exe
+*.gcda
+*.gcno
+
+# Backup copies
+*.bak
