@@ -1,215 +1,338 @@
-# GPU uplink interference measurement: plan
+# GPU uplink interference measurement: student guide
 
-Measure uplink interference on the unscheduled resource blocks of the OCUDU gNB, compute it on the DGX Spark GPU with
-PyTorch, and report a summary to FlexRIC over E2. Build and debug everything on today's 20 MHz split 8 (USRP) system,
-then move to a 100 MHz O-RU system later with as little rewriting as possible.
+This project measures interference on a live 5G base station, computes it on a GPU with PyTorch, and reports the result
+to a network controller. No wireless background is assumed: section 2 explains everything you need, and section 7 is a
+glossary to come back to.
 
-Code that goes with this plan: [`gpu_ul_tap/`](../gpu_ul_tap/README.md).
+- **Supervision:** Ruibin (PhD student) supervises day to day. Ask Ruibin first when you are stuck on the testbed.
+- **Code:** repository `Ruibin2000/ocudu`. Open pull requests against **`Ruibin2000/ocudu` main**, never against the
+  upstream OCUDU project.
+- **Prototype code:** [`gpu_ul_tap/`](../gpu_ul_tap/README.md). Instructions for AI coding agents are in
+  [`gpu_ul_tap/AGENTS.md`](../gpu_ul_tap/AGENTS.md) (see section 5).
 
-## 1. Why this split of work
+## 1. What we are building and why
 
-- **Today:** OCUDU gNB on the DGX Spark, split 8 over a USRP, 20 MHz. The PHY runs on the CPU (upstream OCUDU's only
-  CUDA component today is the PRACH detector, see [nvidia_cuda_build.md](nvidia_cuda_build.md)). The GPU is free for our
-  own processing. FlexRIC is connected over E2 and receives the standard KPM metrics.
-- **Later:** 100 MHz with an O-RAN 7.2x O-RU. Lead times on O-RUs are long, so the measurement pipeline is developed
-  now on the narrowband system.
-- **What must carry over:** the measurement module. It takes `(grid, occupied)` tensors and returns a summary, and knows
-  nothing about OCUDU, USRPs, O-RUs or Aerial. Only the adapter that produces those tensors and the publisher that
-  delivers the summary are platform specific.
+A 5G base station receives signals from phones. Sometimes it also picks up energy that nobody in the network sent:
+another cell, a faulty device, a jammer. This energy is called **interference**, and it makes uplink connections slow or
+unreliable. Operators want to know where it is and how strong it is.
 
-## 2. Architecture
+The base station knows which parts of the spectrum it told each phone to use. Anything it receives on the parts it left
+empty is interference plus background noise. Our job:
+
+1. Copy what the base station receives, every half millisecond, out of the running software.
+2. On the GPU, measure the energy on the parts nobody was scheduled to use.
+3. Send a short summary ("PRBs 33 to 35 are 6 dB above the noise floor") to the network controller (FlexRIC).
+
+The rule that shapes everything: **the base station must never wait for us.** Section 2.4 explains why.
+
+## 2. Wireless in 15 minutes
+
+### 2.1 The setup
+
+| Thing | What it is in our lab |
+| --- | --- |
+| **gNB** (base station) | The OCUDU software, running on an NVIDIA DGX Spark (20 Arm CPU cores, a Blackwell GPU, CPU and GPU share the same memory). |
+| **Radio** | A USRP: a box that turns radio waves into digital samples and back. Connected to the Spark over a network cable. |
+| **UE** (user equipment) | A phone or 5G modem that connects to our gNB. |
+| **Core network** | Software that authenticates the UE and routes its internet traffic. The gNB needs it to accept a UE. |
+| **FlexRIC** | A controller that collects measurements from the gNB. Small programs running on it are called **xApps**. |
+
+**Uplink (UL)** means UE to gNB. **Downlink (DL)** means gNB to UE. We only look at the uplink.
+
+### 2.2 The received signal is an image
+
+5G uses OFDM: it splits the spectrum into many narrow frequencies (**subcarriers**) and sends data on all of them at
+once, in short time steps (**OFDM symbols**). Think of what the gNB receives as a sequence of images:
+
+- One image per **slot** (0.5 ms in our configuration).
+- Each image is 14 columns (**symbols**, time) by 612 rows (**subcarriers**, frequency).
+- Each pixel is one complex number (I/Q): amplitude and phase of that frequency at that time. The pixel is called a
+  **resource element (RE)**. Its power is `re² + im²`.
+- Rows are grouped in blocks of 12, called **physical resource blocks (PRBs)**. 612 subcarriers = 51 PRBs. The PRB is the
+  unit the scheduler hands out, so we measure per PRB.
+- The gNB has 2 receive antennas (**ports**), so each slot is really a tensor `[ports=2, symbols=14, subcarriers=612]`.
+
+That tensor is called the **resource grid**. In code it is `x[B, P, S, K]`: batch of slots, ports, symbols, subcarriers.
+
+### 2.3 Who uses which pixels
+
+The **scheduler** in the gNB decides, slot by slot, which PRBs and symbols each UE may transmit on. These assignments are
+called **allocations**. The uplink has several kinds of transmission (**channels**), and they all occupy pixels:
+
+| Channel | Carries | Where it usually sits |
+| --- | --- | --- |
+| **PUSCH** | User data (your iperf traffic) | A block of PRBs that moves from slot to slot |
+| **PUCCH** | Short control messages (acks, channel quality reports) | The edges of the band |
+| **SRS** | Sounding signals the gNB uses to measure the channel | The last symbols of some slots |
+| **PRACH** | A phone's first "hello" when it connects | A fixed block of PRBs in specific slots |
+| **DMRS** | Known pilot symbols inside PUSCH and PUCCH | Inside those allocations |
+
+Interference + noise = power on the pixels **none** of these use. If we forget a channel (for example PUCCH), we will
+mistake a phone's own signal for interference. That is the most common bug to watch for.
+
+### 2.4 Time and why the gNB must never wait
+
+- At our settings (30 kHz **subcarrier spacing**, SCS) a slot lasts 0.5 ms. 20 slots make a 10 ms **frame**. Frames are
+  numbered by the **SFN** (system frame number, 0 to 1023, then it wraps).
+- **TDD**: uplink and downlink share the same frequency and take turns in time. Only some slots are uplink, and one
+  "special" slot is partly downlink, partly uplink. The gNB only gives us the uplink slots.
+- The USRP streams samples continuously. If the gNB falls behind by even a fraction of a millisecond, samples are lost
+  and the gNB prints **late**, **underflow** or **overflow** warnings. UEs then lose packets or disconnect.
+
+So the code inside the gNB only copies data into shared memory and returns. All the heavy work happens in a separate
+Python process that may be slow (10 ms or more is fine). If that process falls behind, it skips slots; the gNB never
+notices.
+
+### 2.5 Noise, interference and decibels
+
+- **Noise** is the random background every receiver sees. On a quiet PRB the power is roughly constant: the **noise
+  floor**.
+- **Interference** shows up as PRBs whose power sits clearly above the floor.
+- Powers are compared in **decibels**: `dB = 10·log10(power)`. +3 dB is twice the power, +10 dB is ten times. Our grid
+  values have no physical unit, so our dB values are relative ("dBFS-like"). That is fine for finding interference.
+
+### 2.6 How the pieces fit
 
 ```mermaid
 flowchart LR
   subgraph gNB["OCUDU gNB (CPU, real time)"]
-    RU["Radio Unit<br/>ru_sdr (split 8) or ru_ofh (split 7.2)"]
-    TAP["rx_tap_symbol_notifier<br/>(decorator)"]
-    UPHY["Upper PHY"]
-    PDU["UL PDUs<br/>PUSCH / PUCCH / SRS / PRACH"]
-    E2["E2 agent (KPM)"]
-    RU -- "on_new_uplink_symbol()" --> TAP --> UPHY
-    PDU -. "stage_allocations()" .-> TAP
+    RU["Radio Unit<br/>(talks to the USRP)"]
+    TAP["rx_tap<br/>(our copy hook)"]
+    UPHY["Upper PHY<br/>(decodes the UE)"]
+    SCH["Scheduler<br/>allocations"]
+    E2["E2 agent"]
+    RU --> TAP --> UPHY
+    SCH -. "which pixels are used" .-> TAP
   end
-  RING[("/dev/shm/rxtap<br/>lock-free ring")]
+  RING[("shared memory ring<br/>/dev/shm/rxtap")]
   subgraph GPU["gpu_consumer.py (separate process)"]
-    RD["reader thread"] --> CMP["UlInterferenceMeasure<br/>PyTorch on GPU"] --> PUB["publisher"]
+    RD["reader"] --> CMP["PyTorch measurement<br/>on GPU"] --> PUB["publisher"]
   end
-  TAP -- "memcpy per symbol (cbf16)" --> RING --> RD
-  PUB -- "option C: socket" --> X["xApp on FlexRIC"]
-  PUB -. "option A: custom KPM metrics" .-> E2 --> RIC["FlexRIC"]
+  TAP --> RING --> RD
+  PUB --> X["xApp on FlexRIC"]
+  PUB -. "later" .-> E2 --> RIC["FlexRIC"]
 ```
 
-Design rules:
+**E2** is the standard interface between a gNB and a RIC controller. **KPM** is the standard set of measurements sent
+over E2. In the last step our interference numbers become custom KPM measurements.
 
-1. **The gNB never waits for the GPU.** The ring is single producer, non-blocking. If the consumer falls behind, old
-   slots are overwritten and the consumer counts them. The only cost added to the real-time path is one `memcpy` per
-   port per symbol of data that is already in memory, and a few atomic stores per slot.
-2. **The GPU work is a separate process.** Python, PyTorch and garbage collection stay out of the gNB process. Pin the
-   consumer to cores the gNB does not use.
-3. **Latency tolerant.** The near-RT RIC loop is 10 ms to 1 s, so the consumer batches slots (20 slots = 10 ms at
-   30 kHz) and can take milliseconds per batch.
+## 3. Steps and deliverables
 
-## 3. Phase 0: offline, no code changes
+Each step ends with something small you can **show** Ruibin and me. A step is done when its "Pass if" holds and the
+deliverable is in the pull request description.
 
-OCUDU can already dump the received resource grid to a file: see the `phy_rx_symbols_filename` and `phy_rx_symbols_port`
-options in `apps/units/flexible_o_du/o_du_low/du_low_config_cli11_schema.cpp` (with optional triggers on PRACH RSSI,
-PUSCH CRC failure, SINR or LDPC iterations).
+### How to hand in a step
 
-1. Enable the dump for one port during a short session with the UE running iperf uplink.
-2. Load the dump in Python, reshape to `[slots, symbols, subcarriers]`, and run the measurement ideas on it in NumPy or
-   PyTorch on the GPU.
-3. Compare against what OCUDU already reports (PUSCH SINR, noise estimates in the logs) to sanity check scaling.
+- One pull request per step, against `Ruibin2000/ocudu` main, titled `Step N: ...`.
+- In the PR description: what you changed (in your own words), the exact commands to reproduce it, and the deliverable
+  (log excerpt, plot, short screen recording).
+- Be ready to run it live in 5 minutes and to explain every line you changed, including lines an AI agent wrote.
 
-This gives the students real data to work with before any C++ change.
+### Overview
 
-## 4. Phase 1: live tap in the gNB
+| Step | Title | Needs radio | Track |
+| --- | --- | --- | --- |
+| 0 | Reproduce the running gNB | yes | everyone |
+| 1 | Synthetic pipeline on the GPU | no | Python |
+| 2 | Look at real data offline | yes (once) | Python |
+| 3 | Config option and shared-memory ring | yes for the last check | C++ |
+| 4 | Live tap | yes | C++ |
+| 5 | Allocation table | yes | C++ |
+| 6 | Reserved PRBs | yes | C++ (config) |
+| 7 | Catch a real interferer | yes | everyone |
+| 8 | Summary to an xApp | no (synthetic) / yes | Python |
+| 9 | Custom KPM metrics over E2 | yes | C++ |
 
-### 4.1 Where to tap
+Steps 1, 2 and 8 (Python track) can run in parallel with steps 3 to 6 (C++ track). Step 7 needs step 5.
 
-Both radio paths deliver received symbols through the same interface, `ru_uplink_plane_rx_symbol_notifier`
-(`include/ocudu/ru/ru_uplink_plane.h`):
+### Step 0: Reproduce the running gNB
 
-- split 8: `apps/units/flexible_o_du/split_8/helpers/ru_sdr_factories.cpp`
-- split 7.2: `apps/units/flexible_o_du/split_7_2/helpers/ru_ofh_factories.cpp`
+Ruibin already has the gNB running on the Spark with the USRP, a UE attached and FlexRIC connected. Your job is to
+reproduce it yourself, from a clean checkout, without Ruibin typing anything.
 
-Both receive it as `flexible_o_du_ru_dependencies::symbol_notifier`
-(`apps/units/flexible_o_du/split_helpers/flexible_o_du_configs.h`), which is set in
-`apps/units/flexible_o_du/split_helpers/flexible_o_du_factory.cpp` to `du_impl->get_upper_ru_ul_adapter()`.
+1. Build OCUDU on the Spark from this repository (ask Ruibin for the CMake options in use).
+2. Start the core network, the gNB with Ruibin's configuration file, and FlexRIC.
+3. Attach the UE and run uplink traffic with iperf3, the UE sending to a server behind the core network (ask Ruibin
+   for the exact command).
+4. Write down everything you did in `gpu_ul_tap/RUNBOOK.md`: versions, commands, config files, which terminal runs
+   what, and the problems you hit.
 
-`gpu_ul_tap/rx_tap_symbol_notifier.h` is a decorator for that interface: it copies each symbol into the ring and then
-forwards the call unchanged. Tapping here means the same tap keeps working when the system moves to an O-RU under OCUDU.
+**Deliverable:** `RUNBOOK.md` + a gNB console excerpt showing the UE attached and uplink throughput.
+**Pass if:** another student follows your runbook and gets the same result. Also note the late/underflow counts in the
+gNB console over 5 minutes of iperf: this is the baseline for step 4.
 
-### 4.2 Wiring (student task)
+### Step 1: Synthetic pipeline on the GPU
 
-1. Add an option (CLI/YAML, e.g. under `expert_phy`) to enable the tap and set the shared-memory name.
-2. In `flexible_o_du_factory.cpp`, when enabled, construct `rx_tap_symbol_notifier` around
-   `du_impl->get_upper_ru_ul_adapter()` with the cell's port count, 14 symbols, `nof_prb * 12` subcarriers and SCS, and
-   pass it as `symbol_notifier`. It must outlive the radio unit, so store it in `du_impl` (or alongside the RU).
-3. Add `gpu_ul_tap` to the include path for that target.
-4. Run with the USRP and check the real-time counters (section 8) with the tap on and off.
+A fake gNB (`synthetic_producer`) writes noise, a moving PUSCH, PUCCH at the edges and an interferer on PRBs 33 to 35.
+The consumer must find that interferer. Commands are in [`gpu_ul_tap/README.md`](../gpu_ul_tap/README.md).
 
-The grid is stored in OCUDU as `cbf16_t` (bfloat16 I/Q, 4 bytes per RE) and `resource_grid_reader::get_view(port, l)`
-gives a zero-copy view of one symbol, so the tap copies the native format and the GPU converts to complex64. At 20 MHz,
-2 ports this is about 69 kB per slot; at 100 MHz, 4 ports about 0.7 MB per slot (1.4 GB/s at 30 kHz), which the Spark's
-unified memory handles easily.
+1. Run it with `--device cpu`, then `--device cuda` on the Spark.
+2. Add timing: print the compute time per batch (synchronize the GPU before reading the clock).
 
-### 4.3 Allocation table
+**Deliverable:** console output from both runs + mean and max compute time per batch.
+**Pass if:** `floor_db` is near 0 on both ports, `hot_prbs=[33, 34, 35]`, `discarded=0`, and GPU time per batch is well
+under 10 ms.
 
-To measure on empty RBs, the consumer needs to know what was scheduled in every slot. Each ring slot carries a table of
-up to 64 `{type, rnti, start_prb, nof_prb, start_symb, nof_symb}` entries.
+### Step 2: Look at real data offline
 
-- The UL PDUs for a slot reach the upper PHY before the slot is received, through `uplink_pdu_slot_repository`
-  (`include/ocudu/phy/upper/uplink_pdu_slot_repository.h`: `add_pusch_pdu`, `add_pucch_pdu`, `add_srs_pdu`; PRACH
-  occasions come through the PRACH path).
-- Student task: at that point, convert each PDU to one or more entries (a PUSCH `rb_allocation` can be non-contiguous,
-  so write one entry per contiguous run; PUCCH with frequency hopping is two entries) and call
-  `rx_tap_symbol_notifier::stage_allocations(slot, entries)`.
-- **Every UL channel counts as occupied, not only PUSCH.** PUCCH (usually the band edges), SRS (usually the last
-  symbols), PRACH occasions and DMRS all occupy REs without a PUSCH allocation. If the table is missing for a slot, the
-  consumer treats the whole slot as occupied.
+OCUDU can write the received grid to a file. Use it to see what real signals look like before changing any C++.
 
-## 5. Phase 2: the measurement module
+1. Add to the gNB config, under `log:`, `phy_rx_symbols_filename: /tmp/rx.bin`, `phy_rx_symbols_port: all` and
+   `phy_rx_symbols_pusch_threshold_sinr_dB: 100`. The last option makes the gNB save every slot that has a PUSCH (it
+   saves slots whose signal quality is below 100 dB, which is all of them).
+2. Run 30 s of uplink iperf, then stop the gNB.
+3. In a notebook: the file is raw `complex64` values, slot after slot, each slot laid out `[port][symbol][subcarrier]`.
+   Reshape, compute power per PRB, and plot a **spectrogram**: PRB on the y axis, time (slot × symbol) on the x axis,
+   power in dB as colour.
 
-`UlInterferenceMeasure` in `gpu_ul_tap/gpu_consumer.py`. Inputs: `x` complex64 `[B, P, S, K]` and `occupied` bool
-`[B, S, N]`. Per batch it computes:
+**Deliverable:** the spectrogram PNG and the notebook.
+**Pass if:** you can point to the PUSCH blocks, the PUCCH at the band edges, and quiet PRBs at the noise floor.
 
-| Output | Meaning |
+### Step 3: Config option and shared-memory ring
+
+Make the tap switchable from the gNB config and connect it inside the gNB.
+
+1. Add two options to the gNB config (under `expert_phy`): enable the uplink grid tap, and the shared-memory name
+   (default `/rxtap`). Off by default.
+2. Wire the tap into the gNB so it sees every received symbol.
+3. Write `gpu_ul_tap/ring_info.py`: it opens the ring and prints the header (ports, symbols, subcarriers, SCS) and how
+   fast slots are arriving.
+
+**Deliverable:** `gnb --help` output showing the options, `ring_info.py` output with the gNB running.
+**Pass if:** the header matches the cell (2 ports, 14 symbols, 612 subcarriers, 30 kHz), slots arrive at the uplink rate
+of your TDD pattern, and with the option off `/dev/shm/rxtap` does not exist.
+
+### Step 4: Live tap
+
+Run the consumer on live data and prove the gNB is not disturbed.
+
+1. Run `gpu_consumer.py` against the live ring (the allocation table does not exist yet, so it treats every PRB as
+   used; that is expected).
+2. Adapt your step 2 notebook to plot a live spectrogram from the ring.
+3. Run 5 minutes of uplink iperf with the tap off, then 5 minutes with the tap on.
+
+**Deliverable:** a live spectrogram + a table: late/underflow/overflow counts, iperf throughput, consumer `overruns`,
+tap off vs on.
+**Pass if:** counts and throughput are the same with the tap on, and the spectrogram looks like step 2.
+
+### Step 5: Allocation table
+
+Tell the consumer which pixels were scheduled, for **every** uplink channel (section 2.3).
+
+1. For each uplink slot, record the PUSCH, PUCCH, SRS and PRACH allocations and attach them to the slot in the ring.
+2. Draw the allocations as boxes on top of the live spectrogram.
+3. Run iperf at three loads (none, light, full) and plot `floor_db` over time.
+
+**Deliverable:** the spectrogram with boxes + the `floor_db` plot.
+**Pass if:** every bright region sits inside a box (or its 1-PRB guard), and the noise floor changes by less than 1 dB
+between loads. If the floor rises with load, a channel is missing from the table.
+
+### Step 6: Reserved PRBs
+
+With a busy UE there may be no empty PRBs. Reserve some on purpose: restrict PUSCH to a PRB range with the `start_rb` /
+`end_rb` options of the `pusch` section in the cell configuration.
+
+**Deliverable:** the config change + a plot of `free_frac` per PRB at full load.
+**Pass if:** the reserved PRBs are measurable in every uplink slot (`free_frac` close to 1) at full iperf load, and
+throughput drops only by roughly the fraction of PRBs reserved.
+
+### Step 7: Catch a real interferer
+
+The demo that proves the whole chain works. With Ruibin, inject a known narrowband signal into the uplink band: a signal
+generator or a second USRP, **connected by cable through attenuators, never over the air** unless Ruibin confirms the lab
+is licensed for it.
+
+**Deliverable:** a short screen recording: interferer off, then on, then off, with the consumer output and spectrogram.
+**Pass if:** `hot_prbs` shows exactly the interferer's PRBs within one 10 ms batch of switching it on, and clears when it
+is switched off, while the UE keeps running.
+
+### Step 8: Summary to an xApp
+
+Send the summary out of the consumer, the quick way: replace the `publish_summary` stub with a UDP or ZMQ sender, and
+write a small receiver (a plain Python script first, a FlexRIC xApp if time allows).
+
+**Deliverable:** receiver output updating live + the measured delay from slot capture (`t_ns`) to arrival.
+**Pass if:** works with the synthetic producer and with the live gNB; delay well under 1 s.
+
+### Step 9: Custom KPM metrics over E2
+
+The proper way: the gNB reports the summary to FlexRIC itself, as custom KPM measurements, so any standard KPM xApp can
+subscribe to them.
+
+**Deliverable:** a FlexRIC KPM xApp printing the custom metric next to a standard one.
+**Pass if:** the values match what the step 8 receiver shows.
+
+## 4. Testbed rules
+
+- Pin the consumer to CPU cores the gNB does not use (`taskset -c 16-19 ...`; ask Ruibin which cores the gNB uses).
+- Before claiming a C++ change is harmless, compare the late/underflow counts with the step 0 baseline.
+- Do not leave a modified gNB running on the shared testbed. Tell Ruibin when you use the radio.
+
+## 5. Working with an AI coding agent
+
+You are encouraged to use one. Some rules make it work well:
+
+- `gpu_ul_tap/AGENTS.md` holds the technical instructions for agents: code locations, rules about the real-time path,
+  traps already found. Most agents read `AGENTS.md` files automatically; if yours does not, tell it to read that file
+  first.
+- Give the agent **one step at a time**, and paste the step's deliverable and "Pass if" into your request.
+- Ask it to explain wireless terms and code it touches, using the glossary below. You are responsible for every line it
+  writes: if you cannot explain a change, do not submit it.
+- An agent saying "it works" is not a deliverable. Run it and look at the output yourself.
+- When you find a trap the agent fell into, add one line about it to `gpu_ul_tap/AGENTS.md` in the same PR.
+
+## 6. Later: 100 MHz and a commercial radio
+
+We plan to move to 100 MHz bandwidth with an O-RAN radio (an **O-RU**, split 7.2) and possibly NVIDIA Aerial, where the
+PHY itself runs on the GPU. Grids become about 10 times larger (4 ports, 273 PRBs). The measurement code takes tensors and
+knows nothing about the radio, so it carries over; keep it that way.
+
+## 7. Glossary
+
+| Term | Meaning |
 | --- | --- |
-| `interf_db[P, N]` | Interference + noise power per port and PRB, averaged over free REs |
-| `floor_db[P]` | Median over measurable PRBs: the noise floor estimate |
-| `excess_db[N]`, `hot_prbs[N]` | How far each PRB sits above the floor; PRBs more than 3 dB above it |
-| `eig_spread_db[N]` | Eigenvalue spread of the free-RE spatial covariance: high means a spatially coherent interferer rather than thermal noise |
-| `free_frac[N]` | Fraction of symbols in which the PRB was measurable |
-
-Details that matter:
-
-- **Guard PRBs.** In-band emission and timing offsets from a UE leak into adjacent PRBs, so allocations are dilated by
-  `--guard` PRBs (default 1) before choosing free REs.
-- **TDD.** The radio unit only delivers the slots the upper PHY requested for uplink, so DL slots never reach the ring.
-  In the special slot only the UL symbols carry data: mark the DL and guard symbols as occupied (or skip them) when
-  building the occupancy mask.
-- **Scaling.** Values are relative to the grid's digital scale (dBFS-like). Calibrate to dBm once with a signal
-  generator, and keep calibration outside the module so it carries over to other radios.
-- **Make empty RBs on purpose.** Relying on idle RBs makes measurements depend on load. OCUDU's scheduler can restrict
-  PUSCH to an RB range (`pusch: start_rb / end_rb` in the cell configuration, see
-  `apps/units/flexible_o_du/o_du_high/du_high/du_high_config_cli11_schema.cpp`), which leaves a known set of RBs free
-  for measurement. A rotating blanked set (the uplink analogue of CSI-IM) is a later refinement in the scheduler.
-
-Extensions once the basics work: per-UE measurements on occupied RBs using DMRS, interference time statistics
-(burstiness, duty cycle), spectrogram features, or a small trained classifier for interferer type.
-
-## 6. Phase 3: reporting to FlexRIC
-
-The gNB-RIC interface is E2 (E1 is the CU-CP to CU-UP interface). Three options, in the order to do them:
-
-1. **Option C, quick prototype.** The publisher sends the summary over a UDP/ZMQ socket straight to a custom xApp. Not
-   O-RAN clean (the gNB is not the source), but it proves the measurements are useful before touching the E2 agent.
-2. **Option A, custom KPM metrics.** Add measurements to OCUDU's KPM provider
-   (`lib/e2/e2sm/e2sm_kpm/e2sm_kpm_du_meas_provider_impl.cpp`) and feed them from the consumer, e.g. through a second
-   small shared-memory region written by the consumer and read by the DU. A FlexRIC KPM xApp subscribes to them by name
-   like any other metric. Best for scalar per-cell or per-PRB-group values.
-3. **Option B, custom service model.** If the summary is structured (per-PRB arrays, matrices), define a custom E2SM
-   with matching encoders in OCUDU and FlexRIC. Most flexible, most work.
-
-## 7. Phase 4: moving to 100 MHz and an O-RU
-
-Two routes, and the pipeline survives both:
-
-| | OCUDU with an O-RU (split 7.2, CPU PHY) | NVIDIA Aerial L1 (GPU PHY) |
-| --- | --- | --- |
-| Tap | Same `rx_tap_symbol_notifier` (it already sits on the split 7.2 path) | Aerial dApp framework: E3 interface exposes fronthaul I/Q, PUSCH DMRS channel estimates, SRS data, per-RB SNR and RB allocation; large items arrive as references into shared memory |
-| Offline data | `phy_rx_symbols_*` dump | Aerial Data Lake (ClickHouse; pyAerial notebooks read it) |
-| E2 | Unchanged | Depends on the L2 stack above Aerial (OAI, or OCUDU L2 over Aerial L1) |
-| New code | None for the tap; check real-time headroom at 100 MHz on the Spark's 20 Arm cores | A new adapter (E3 client to tensors) and possibly a new publisher |
-
-Upstream example configs for O-RUs under OCUDU: `configs/gnb_ru_ran550_tdd_n78_100mhz_4x2.yml` (Benetel RAN550, 100 MHz)
-and `configs/gnb_ru_rpqn4800e_tdd_n78_20mhz_2x2.yml` (Foxconn RPQN-4800E).
-
-Things to check before relying on the O-RU route:
-
-- **Does the O-RU send unscheduled PRBs?** In 7.2x the DU's C-plane requests which PRBs and symbols the O-RU returns.
-  If only scheduled PRBs are requested, there is no I/Q for the empty RBs. Check what OCUDU (and Aerial) request.
-- **GPU sharing with Aerial.** With Aerial the GPU also runs the PHY with hard slot deadlines. NVIDIA isolates dApps with
-  MIG on MIG-capable GPUs; whether that is available on the Spark's GB10 needs checking. Without it, keep custom work
-  small and batched and watch for L1 deadline misses.
-- **Shapes.** A 4T4R O-RU gives 4 ports and 273 PRBs; nothing in the module assumes 2x2.
-
-## 8. Real-time hygiene
-
-Check these with the tap disabled, then enabled, at the same load:
-
-- gNB console/log: RF late, underflow and overflow counters (split 8), or OFH late/early packet counters (split 7.2).
-- PUSCH CRC failures and throughput in iperf.
-- Consumer counters: `overruns` (consumer too slow for the ring), `torn` (slot overwritten while copying),
-  `discarded` (compute too slow; increase `--nbuf` or simplify the module).
-
-Also: run the consumer pinned (`taskset`) on cores outside the gNB's set, raise `RLIMIT_MEMLOCK` so the ring can be
-`mlock`ed, and keep the gNB's CPU governor in performance mode.
-
-## 9. Milestones
-
-| # | Milestone | Done when |
-| --- | --- | --- |
-| 1 | Synthetic pipeline | `synthetic_producer` + `gpu_consumer.py --device cuda` on the Spark finds the injected interferer |
-| 2 | Offline real data | Interference per PRB computed from a `phy_rx_symbols` dump of a live session |
-| 3 | Live tap | Decorator wired in, ring filled from the USRP, no change in RF late/underflow counters |
-| 4 | Allocation table | Occupancy from the UL PDUs; floor estimate stable as UE load varies |
-| 5 | Reserved RBs | PUSCH restricted by `start_rb/end_rb`; known free RBs measured every slot |
-| 6 | RIC prototype | Summary visible in an xApp (option C) |
-| 7 | KPM integration | Custom KPM metrics in OCUDU's E2 agent, read by a FlexRIC KPM xApp (option A) |
-| 8 | Wideband port | Same module on 100 MHz O-RU data (OCUDU split 7.2 or Aerial) |
-
-## 10. Open questions
-
-- What exactly does the student's current configuration use (USRP model, ports, TDD pattern)? Set `--ports` and
-  `--prb` of the synthetic producer to match.
-- Which OCUDU KPM version and metric naming does FlexRIC expect? Check the "Supported E2 Metrics" page of the OCUDU
-  documentation and the FlexRIC KPM xApp examples.
-- For the O-RU route: which O-RU, and does its C-plane configuration return all PRBs?
+| 5G NR | The 5G radio standard ("New Radio"). |
+| gNB | 5G base station. Here: the OCUDU software. |
+| CU / DU | Central unit / distributed unit: the two halves of a gNB. Our code lives in the DU. |
+| UE | User equipment: a phone or modem. |
+| Uplink / downlink (UL/DL) | UE to gNB / gNB to UE. |
+| USRP | Software-defined radio hardware that turns radio waves into samples. |
+| O-RU | Commercial O-RAN radio unit (future testbed). |
+| Split 8 / split 7.2 | Where the radio stops and the gNB software starts. Split 8: the radio sends raw samples (USRP). Split 7.2: the radio does part of the processing (O-RU). |
+| RU (Radio Unit, in code) | The part of OCUDU that talks to the radio hardware. |
+| PHY / upper PHY | Physical layer: the signal processing that turns samples into bits. |
+| OFDM | Splitting the spectrum into many narrow subcarriers sent in parallel. |
+| Subcarrier | One narrow frequency. A row of the grid. |
+| SCS | Subcarrier spacing. 30 kHz here. Sets the slot length (0.5 ms). |
+| OFDM symbol | One time step of the grid. A column. 14 per slot. |
+| RE | Resource element: one subcarrier in one symbol. A pixel. |
+| PRB / RB | Physical resource block: 12 adjacent subcarriers. 51 PRBs in 20 MHz at 30 kHz. |
+| Resource grid | All REs of a slot: `[ports, symbols, subcarriers]`. |
+| Port | One receive antenna (2 here). |
+| Slot | 14 symbols, 0.5 ms here. |
+| Frame / SFN | 10 ms = 20 slots / frame counter, 0 to 1023. |
+| TDD | Uplink and downlink take turns on the same frequency. |
+| I/Q | The real and imaginary parts of a sample. |
+| bf16 / cbf16 | bfloat16, a 16-bit float. OCUDU stores each RE as two of them (4 bytes). |
+| Scheduler | Decides which UE uses which PRBs in each slot. |
+| Allocation | One scheduling decision: channel, PRBs, symbols. |
+| PUSCH / PUCCH / SRS / PRACH / DMRS | Uplink channels; see section 2.3. |
+| FAPI | The internal message format the scheduler uses to tell the PHY what to receive. |
+| Noise floor | Power of a quiet PRB: receiver noise only. |
+| Interference | Unwanted energy above the noise floor. |
+| dB / dBFS | Logarithmic power ratio / dB relative to the digital full scale. |
+| Guard PRB | A PRB next to an allocation, skipped because a UE's signal leaks into it. |
+| Eigenvalue spread | Compares the two antennas: noise looks different on each, one real interferer looks similar on both. |
+| Late / underflow / overflow | gNB warnings that it missed the radio's timing. Must not increase with our tap. |
+| Shared memory ring | A fixed memory buffer both processes see; the gNB writes slots in a circle, the consumer reads behind it. |
+| RIC / near-RT RIC | RAN Intelligent Controller: software that monitors and steers gNBs (10 ms to 1 s loop). FlexRIC is ours. |
+| xApp | A program running on the RIC. |
+| E2 | Standard interface between gNB and RIC. |
+| KPM | Standard set of performance measurements sent over E2. |
+| iperf | Tool that generates network traffic to load the link. |
 
 ## References
 
 - OCUDU documentation: <https://docs.ocudu.org/>
+- FlexRIC: <https://gitlab.eurecom.fr/mosaic5g/flexric>
 - NVIDIA Aerial dApp framework: <https://docs.nvidia.com/aerial/cuda-accelerated-ran/latest/dapp_framework/index.html>
-- NVIDIA Aerial Data Lake: <https://docs.nvidia.com/aerial/cuda-accelerated-ran/latest/data_lake/index.html>
-- Sionna Research Kit (related OAI-based platform on DGX Spark): <https://nvlabs.github.io/sionna/rk/index.html>
