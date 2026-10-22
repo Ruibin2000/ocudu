@@ -399,6 +399,7 @@ static void fill_cu_cp_metrics_layers_section(YAML::Node node, const cu_cp_unit_
   node["enable_ngap"] = config.enable_ngap;
   node["enable_pdcp"] = config.enable_pdcp;
   node["enable_rrc"]  = config.enable_rrc;
+  node["enable_ue_identity"] = config.enable_ue_identity;
 }
 
 static void fill_cu_cp_metrics_section(YAML::Node node, const cu_cp_unit_metrics_config& config)

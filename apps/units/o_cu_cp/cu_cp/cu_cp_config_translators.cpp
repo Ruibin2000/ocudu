@@ -455,6 +455,7 @@ ocucp::cu_cp_configuration ocudu::generate_cu_cp_config(const cu_cp_unit_config&
   // Metrics.
   out_cfg.metrics.layers_cfg.enable_ngap = cu_cfg.metrics.layers_cfg.enable_ngap;
   out_cfg.metrics.layers_cfg.enable_rrc  = cu_cfg.metrics.layers_cfg.enable_rrc;
+  out_cfg.metrics.layers_cfg.enable_ue_identity = cu_cfg.metrics.layers_cfg.enable_ue_identity;
 
   // Mobility.
   out_cfg.mobility.mobility_manager_config.trigger_handover_from_measurements =

@@ -816,6 +816,8 @@ static void configure_cli11_metrics_layers_args(CLI::App& app, cu_cp_unit_metric
   add_option(app, "--enable_ngap", metrics_params.enable_ngap, "Enable NGAP metrics")->capture_default_str();
   add_option(app, "--enable_pdcp", metrics_params.enable_pdcp, "Enable PDCP metrics")->capture_default_str();
   add_option(app, "--enable_rrc", metrics_params.enable_rrc, "Enable CU-CP RRC metrics")->capture_default_str();
+  add_option(app, "--enable_ue_identity", metrics_params.enable_ue_identity, "Enable CU-CP identity snapshots")
+      ->capture_default_str();
 }
 
 static void configure_cli11_metrics_args(CLI::App& app, cu_cp_unit_metrics_config& metrics_params)

@@ -22,7 +22,8 @@ struct ngap_ue_ids {
 struct ngap_ue_context {
   ngap_ue_ids                                               ue_ids;
   ngap_cu_cp_ue_notifier*                                   ue = nullptr;
-  guami_t                                                   serving_guami;
+  guami_t                                                   serving_guami{};
+  bool                                                      serving_guami_valid = false;
   unique_timer                                              request_pdu_session_timer;
   bool                                                      release_requested                     = false;
   bool                                                      release_scheduled                     = false;
@@ -108,6 +109,12 @@ public:
                  "ran_ue={}: NGAP UE context not found",
                  fmt::underlying(amf_ue_id_to_ran_ue_id.at(amf_ue_id)));
     return ues.at(amf_ue_id_to_ran_ue_id.at(amf_ue_id));
+  }
+
+  const ngap_ue_context* find(ue_index_t ue_index) const
+  {
+    auto it = ue_index_to_ran_ue_id.find(ue_index);
+    return it == ue_index_to_ran_ue_id.end() ? nullptr : find(it->second);
   }
 
   ngap_ue_context* find(ran_ue_id_t ran_ue_id)

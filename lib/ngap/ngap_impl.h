@@ -86,6 +86,7 @@ public:
   // ngap_ue_id_translator.
   ue_index_t  get_ue_index(const amf_ue_id_t& amf_ue_ngap_id) override;
   amf_ue_id_t get_amf_ue_id(const ue_index_t& ue_index) override;
+  std::optional<ngap_ue_identity> get_ue_identity_snapshot(ue_index_t ue_index) const override;
 
   ngap_message_handler&                        get_ngap_message_handler() override { return *this; }
   ngap_event_handler&                          get_ngap_event_handler() override { return *this; }

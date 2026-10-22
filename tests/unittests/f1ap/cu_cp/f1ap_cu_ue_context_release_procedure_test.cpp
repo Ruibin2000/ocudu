@@ -13,10 +13,15 @@ using namespace ocucp;
 /// Test the f1 UE context release procedure (gNB-CU initiated)
 TEST_F(f1ap_cu_test, when_ue_release_command_received_then_procedure_succeeds)
 {
+  EXPECT_FALSE(f1ap->get_ue_identity_snapshot(ue_index_t::min).has_value());
   // Action 1: Add UE
   test_logger.info("Injecting Initial UL RRC message");
   f1ap_message init_ul_rrc_msg = test_helpers::generate_init_ul_rrc_message_transfer(int_to_gnb_du_ue_f1ap_id(41255));
   f1ap->handle_message(init_ul_rrc_msg);
+  auto snapshot = f1ap->get_ue_identity_snapshot(ue_index_t::min);
+  ASSERT_TRUE(snapshot.has_value());
+  EXPECT_EQ(snapshot->cu_ue_f1ap_id, 0U);
+  EXPECT_EQ(snapshot->du_ue_f1ap_id, 41255U);
 
   // Action 2: Start UE Context Release procedure
   test_logger.info("Starting UE Context Release procedure");
@@ -30,6 +35,7 @@ TEST_F(f1ap_cu_test, when_ue_release_command_received_then_procedure_succeeds)
 
   // Status: Procedure not yet ready.
   ASSERT_FALSE(t.ready());
+  EXPECT_FALSE(f1ap->get_ue_identity_snapshot(ue_index_t::min).has_value());
 
   // Action 3: Inject UE Context Release Complete message
   test_logger.info("Injecting UE Context Release Complete message");
@@ -39,4 +45,6 @@ TEST_F(f1ap_cu_test, when_ue_release_command_received_then_procedure_succeeds)
 
   ASSERT_TRUE(t.ready());
   ASSERT_EQ(t.get(), ue_index_t::min);
+  EXPECT_FALSE(f1ap->get_ue_identity_snapshot(ue_index_t::min).has_value());
+  EXPECT_EQ(snapshot->du_ue_f1ap_id, 41255U);
 }

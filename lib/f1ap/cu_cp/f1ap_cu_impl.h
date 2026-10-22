@@ -53,6 +53,7 @@ public:
 
   // f1ap_statistics_handler functions.
   size_t get_nof_ues() const override { return ue_ctxt_list.size(); }
+  std::optional<f1ap_ue_identity> get_ue_identity_snapshot(ue_index_t ue_index) const override;
 
   // f1ap_ue_context_removal_handler functions.
   void remove_ue_context(ue_index_t ue_index) override;

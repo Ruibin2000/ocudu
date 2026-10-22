@@ -13,6 +13,11 @@ e2sm_kpm_cu_meas_provider_impl::e2sm_kpm_cu_meas_provider_impl() : logger(ocudul
 
 e2sm_kpm_cu_cp_meas_provider_impl::e2sm_kpm_cu_cp_meas_provider_impl() : e2sm_kpm_cu_meas_provider_impl()
 {
+  // Vendor state gauge: actual CU RRC state, not an identity encoded as a metric.
+  // 0=idle, 1=connected, 2=inactive. Identities travel in the standard UEID.
+  supported_metrics.emplace("FALCON.UE.RRCState",
+                            e2sm_kpm_supported_metric_t{
+                                NO_LABEL, UE_LEVEL, false, &e2sm_kpm_cu_cp_meas_provider_impl::get_ue_rrc_state});
   supported_metrics.emplace(
       "RRC.ConnEstabAtt",
       e2sm_kpm_supported_metric_t{
@@ -49,6 +54,127 @@ e2sm_kpm_cu_cp_meas_provider_impl::e2sm_kpm_cu_cp_meas_provider_impl() : e2sm_kp
   supported_metrics.emplace("RRC.ConnMax",
                             e2sm_kpm_supported_metric_t{
                                 NO_LABEL, E2_NODE_LEVEL, false, &e2sm_kpm_cu_cp_meas_provider_impl::get_rrc_conn_max});
+}
+
+namespace {
+
+ue_id_c make_identity(const cu_cp_metrics_report::ue_info& ue)
+{
+  ue_id_c result;
+  auto& id = result.set_gnb_ue_id();
+  const auto& identity = *ue.identity;
+  id.amf_ue_ngap_id = identity.ngap.amf_ue_ngap_id;
+  id.guami.plmn_id = identity.ngap.guami.plmn.to_bytes();
+  id.guami.amf_region_id.from_number(identity.ngap.guami.amf_region_id);
+  id.guami.amf_set_id.from_number(identity.ngap.guami.amf_set_id);
+  id.guami.amf_pointer.from_number(identity.ngap.guami.amf_pointer);
+  id.gnb_cu_ue_f1ap_id_list.resize(1);
+  id.gnb_cu_ue_f1ap_id_list[0].gnb_cu_ue_f1ap_id = identity.f1.cu_ue_f1ap_id;
+  return result;
+}
+
+bool matches_sst(const cu_cp_metrics_report::ue_info& ue, const test_cond_info_s& condition)
+{
+  if (condition.test_type.type() != test_cond_type_c::types::snssai || !condition.test_expr_present ||
+      condition.test_expr != test_cond_expression_e::equal || !condition.test_value_present ||
+      condition.test_value.type() != test_cond_value_c::types::value_int) {
+    return false;
+  }
+  auto sst = condition.test_value.value_int();
+  return sst >= 0 && sst <= 255 && std::find(ue.slice_ssts.begin(), ue.slice_ssts.end(), sst) != ue.slice_ssts.end();
+}
+
+} // namespace
+
+bool e2sm_kpm_cu_cp_meas_provider_impl::is_ue_supported(const ue_id_c& id)
+{
+  std::lock_guard<std::mutex> lock(cu_cp_metrics_mutex);
+  if (!identity_snapshot_is_fresh() || id.type() != ue_id_c::types::gnb_ue_id) {
+    return false;
+  }
+  return std::any_of(cu_cp_metrics->ues.begin(), cu_cp_metrics->ues.end(), [&](const auto& ue) {
+    return ue.identity && make_identity(ue) == id;
+  });
+}
+
+bool e2sm_kpm_cu_cp_meas_provider_impl::is_test_cond_supported(const test_cond_type_c& type)
+{
+  return type.type() == test_cond_type_c::types::snssai;
+}
+
+bool e2sm_kpm_cu_cp_meas_provider_impl::get_ues_matching_test_conditions(
+    const matching_ue_cond_per_sub_list_l& conditions, std::vector<ue_id_c>& ues)
+{
+  std::lock_guard<std::mutex> lock(cu_cp_metrics_mutex);
+  ues.clear();
+  if (!identity_snapshot_is_fresh()) {
+    return true;
+  }
+  for (const auto& ue : cu_cp_metrics->ues) {
+    if (!ue.identity || ue.rrc_connection_state != ocucp::rrc_state::connected) {
+      continue;
+    }
+    bool matches = std::all_of(conditions.begin(), conditions.end(), [&](const auto& condition) {
+      return !condition.lc_or_present && matches_sst(ue, condition.test_cond_info);
+    });
+    if (matches) {
+      ues.push_back(make_identity(ue));
+    }
+  }
+  return true;
+}
+
+bool e2sm_kpm_cu_cp_meas_provider_impl::get_ues_matching_test_conditions(
+    const matching_cond_list_l& conditions, std::vector<ue_id_c>& ues)
+{
+  std::lock_guard<std::mutex> lock(cu_cp_metrics_mutex);
+  ues.clear();
+  if (!identity_snapshot_is_fresh()) {
+    return true;
+  }
+  for (const auto& ue : cu_cp_metrics->ues) {
+    if (!ue.identity || ue.rrc_connection_state != ocucp::rrc_state::connected) {
+      continue;
+    }
+    bool matches = std::all_of(conditions.begin(), conditions.end(), [&](const auto& condition) {
+      if (condition.lc_or_present) {
+        return false;
+      }
+      const auto& choice = condition.matching_cond_choice;
+      if (choice.type() == matching_cond_item_choice_c::types::test_cond_info) {
+        return matches_sst(ue, choice.test_cond_info());
+      }
+      return choice.type() == matching_cond_item_choice_c::types::meas_label && choice.meas_label().no_label_present;
+    });
+    if (matches) {
+      ues.push_back(make_identity(ue));
+    }
+  }
+  return true;
+}
+
+bool e2sm_kpm_cu_meas_provider_impl::get_ue_rrc_state(const label_info_list_l labels,
+                                                   const std::vector<ue_id_c>& ues,
+                                                   const std::optional<cgi_c> cell,
+                                                   std::vector<meas_record_item_c>& items)
+{
+  if (cell || ues.empty() || labels.size() != 1 || !labels[0].meas_label.no_label_present) {
+    return false;
+  }
+  for (const auto& id : ues) {
+    meas_record_item_c item;
+    item.set_no_value();
+    if (identity_snapshot_is_fresh()) {
+      for (const auto& ue : cu_cp_metrics->ues) {
+        if (ue.identity && make_identity(ue) == id) {
+          item.set_integer() = static_cast<unsigned>(ue.rrc_connection_state);
+          break;
+        }
+      }
+    }
+    items.push_back(item);
+  }
+  return true;
 }
 
 bool e2sm_kpm_cu_meas_provider_impl::check_e2sm_kpm_metrics_definitions(span<const e2sm_kpm_metric_t> metric_defs)
@@ -117,6 +243,12 @@ bool e2sm_kpm_cu_meas_provider_impl::is_metric_supported(const asn1::e2sm::meas_
                                                          const e2sm_kpm_metric_level_enum level,
                                                          const bool&                      cell_scope)
 {
+  if (meas_type.type() != meas_type_c::types::meas_name) {
+    return false;
+  }
+  if (meas_type.meas_name().to_string() == "FALCON.UE.RRCState") {
+    return supported_metrics.count("FALCON.UE.RRCState") != 0 && level == UE_LEVEL && !cell_scope && label.no_label_present;
+  }
   if (!label.no_label_present) {
     logger.debug("Currently only NO_LABEL metric supported.");
     return false;
@@ -152,6 +284,7 @@ bool e2sm_kpm_cu_meas_provider_impl::get_meas_data(const asn1::e2sm::meas_type_c
                                                    const std::optional<asn1::e2sm::cgi_c>       cell_global_id,
                                                    std::vector<asn1::e2sm::meas_record_item_c>& items)
 {
+  std::lock_guard<std::mutex> lock(cu_cp_metrics_mutex);
   metric_meas_getter_func_ptr metric_meas_getter_func;
   auto                        it = supported_metrics.find(meas_type.meas_name().to_string().c_str());
   if (it == supported_metrics.end()) {
@@ -211,7 +344,9 @@ void e2sm_kpm_cu_meas_provider_impl::report_metrics(const ocuup::f1u_metrics_con
 
 void e2sm_kpm_cu_meas_provider_impl::report_metrics(const cu_cp_metrics_report& metrics)
 {
+  std::lock_guard<std::mutex> lock(cu_cp_metrics_mutex);
   cu_cp_metrics = metrics;
+  cu_cp_metrics_updated = std::chrono::steady_clock::now();
 }
 
 e2sm_kpm_cu_up_meas_provider_impl::e2sm_kpm_cu_up_meas_provider_impl() : e2sm_kpm_cu_meas_provider_impl()

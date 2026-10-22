@@ -11,6 +11,7 @@
 #include "ocudu/ngap/ngap_handover.h"
 #include "ocudu/ngap/ngap_init_context_setup.h"
 #include "ocudu/ngap/ngap_metrics.h"
+#include "ocudu/cu_cp/ue_identity.h"
 #include "ocudu/ngap/ngap_rrc_inactive_transition.h"
 #include "ocudu/ngap/ngap_setup.h"
 #include "ocudu/ngap/ngap_ue_context_mod.h"
@@ -359,6 +360,9 @@ public:
   /// \param[in] ue_index of a given UE.
   /// \param[out] amf_ue_id of the given UE.
   virtual amf_ue_id_t get_amf_ue_id(const ue_index_t& ue_index) = 0;
+
+  /// Read a ready, non-releasing local context; never performs a Core query.
+  virtual std::optional<ngap_ue_identity> get_ue_identity_snapshot(ue_index_t ue_index) const { return std::nullopt; }
 };
 
 /// Interface used to capture the NGAP metrics from a single CU-CP NGAP.

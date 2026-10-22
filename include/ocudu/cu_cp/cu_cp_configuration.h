@@ -137,6 +137,8 @@ struct cu_cp_configuration {
     bool enable_ngap = false;
     /// Enable RRC metrics.
     bool enable_rrc = false;
+    /// Opt-in read-only per-UE identity snapshots for CU E2.
+    bool enable_ue_identity = false;
   };
 
   struct metrics_params {

@@ -403,7 +403,7 @@ size_t ue_manager::get_nof_du_ues(du_index_t du_index)
 
 std::vector<cu_cp_metrics_report::ue_info> ue_manager::handle_ue_metrics_report_request() const
 {
-  if (!cu_cp_config.metrics.layers_cfg.enable_rrc) {
+  if (!cu_cp_config.metrics.layers_cfg.enable_rrc && !cu_cp_config.metrics.layers_cfg.enable_ue_identity) {
     return {};
   }
 
@@ -413,6 +413,8 @@ std::vector<cu_cp_metrics_report::ue_info> ue_manager::handle_ue_metrics_report_
   for (const auto& ue : ues) {
     report.emplace_back();
     cu_cp_metrics_report::ue_info& ue_report = report.back();
+
+    ue_report.ue_index = ue.first;
 
     ue_report.rnti  = ue.second.get_c_rnti();
     ue_report.du_id = ue.second.get_du_id();

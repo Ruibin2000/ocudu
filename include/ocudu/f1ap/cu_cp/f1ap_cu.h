@@ -7,6 +7,7 @@
 #include "ocudu/adt/byte_buffer.h"
 #include "ocudu/adt/expected.h"
 #include "ocudu/cu_cp/cu_cp_types.h"
+#include "ocudu/cu_cp/ue_identity.h"
 #include "ocudu/cu_cp/cu_cp_ue_messages.h"
 #include "ocudu/f1ap/cu_cp/du_setup_notifier.h"
 #include "ocudu/f1ap/cu_cp/f1ap_cu_configuration_update.h"
@@ -135,6 +136,8 @@ public:
   /// \brief Returns the number of connected UEs at the F1AP
   /// \return The number of connected UEs.
   virtual size_t get_nof_ues() const = 0;
+
+  virtual std::optional<f1ap_ue_identity> get_ue_identity_snapshot(ue_index_t ue_index) const { return std::nullopt; }
 };
 
 /// Handle UE context removal

@@ -5,6 +5,7 @@
 #pragma once
 
 #include "ocudu/cu_cp/mobility_management_metrics.h"
+#include "ocudu/cu_cp/ue_identity.h"
 #include "ocudu/ngap/ngap_metrics.h"
 #include "ocudu/ran/gnb_du_id.h"
 #include "ocudu/ran/pci.h"
@@ -26,6 +27,9 @@ struct cu_cp_metrics_report {
     pci_t pci;
     /// RRC connection state of the UE.
     ocucp::rrc_state rrc_connection_state;
+    ocucp::ue_index_t ue_index = ocucp::ue_index_t::invalid;
+    std::optional<ocucp::cu_ue_identity> identity;
+    std::vector<uint8_t> slice_ssts;
   };
   struct cell_info {
     nr_cell_global_id_t cgi;

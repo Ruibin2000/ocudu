@@ -3,6 +3,7 @@
 // Portions of this file may implement 3GPP specifications, which may be subject to additional licensing requirements.
 
 #include "e2sm_kpm_utils.h"
+#include <algorithm>
 
 using namespace ocudu;
 
@@ -169,6 +170,16 @@ bool ocudu::operator==(const asn1::e2sm::ue_id_c& lhs, asn1::e2sm::ue_id_c const
 
   // TODO: add support for all types
   switch (lhs.type()) {
+    case asn1::e2sm::ue_id_c::types_opts::gnb_ue_id: {
+      // Include GUAMI, F1/E1 lists and optional identity fields. Comparing only
+      // the numeric AMF UE ID would merge different AMFs or changed contexts.
+      byte_buffer left, right;
+      asn1::bit_ref lref(left), rref(right);
+      if (lhs.pack(lref) != asn1::OCUDUASN_SUCCESS || rhs.pack(rref) != asn1::OCUDUASN_SUCCESS) {
+        return false;
+      }
+      return left.length() == right.length() && std::equal(left.begin(), left.end(), right.begin());
+    }
     case asn1::e2sm::ue_id_c::types_opts::gnb_du_ue_id:
       if (lhs.gnb_du_ue_id() == rhs.gnb_du_ue_id()) {
         return true;
@@ -185,8 +196,16 @@ bool ocudu::operator!=(const asn1::e2sm::ue_id_c& lhs, asn1::e2sm::ue_id_c const
 
 bool ocudu::operator<(const asn1::e2sm::ue_id_c& lhs, asn1::e2sm::ue_id_c const& rhs)
 {
-  ocudu_assert(lhs.type() != rhs.type(), "Cannot compare UEIDs of different types.");
+  ocudu_assert(lhs.type() == rhs.type(), "Cannot compare UEIDs of different types.");
   switch (lhs.type()) {
+    case asn1::e2sm::ue_id_c::types_opts::gnb_ue_id: {
+      byte_buffer left, right;
+      asn1::bit_ref lref(left), rref(right);
+      if (lhs.pack(lref) != asn1::OCUDUASN_SUCCESS || rhs.pack(rref) != asn1::OCUDUASN_SUCCESS) {
+        return false;
+      }
+      return std::lexicographical_compare(left.begin(), left.end(), right.begin(), right.end());
+    }
     case asn1::e2sm::ue_id_c::types_opts::gnb_du_ue_id:
       if (lhs.gnb_du_ue_id() < rhs.gnb_du_ue_id()) {
         return true;

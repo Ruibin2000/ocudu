@@ -114,6 +114,24 @@ protected:
 //                             Initial Context Setup
 ///////////////////////////////////////////////////////////////////////////////
 
+TEST_F(ngap_ue_context_management_procedure_test, identity_snapshot_requires_complete_context_and_retires_on_release)
+{
+  ue_index_t index = start_procedure();
+  EXPECT_FALSE(ngap->get_ue_identity_snapshot(index).has_value());
+  auto& ue = test_ues.at(index);
+  const auto amf_id = uint_to_amf_ue_id((1ULL << 40) - 1);
+  ngap->handle_message(generate_valid_initial_context_setup_request_message(amf_id, ue.ran_ue_id.value()));
+  auto snapshot = ngap->get_ue_identity_snapshot(index);
+  ASSERT_TRUE(snapshot.has_value());
+  EXPECT_EQ(snapshot->amf_ue_ngap_id, (1ULL << 40) - 1);
+  EXPECT_EQ(snapshot->ran_ue_ngap_id, ran_ue_id_to_uint(ue.ran_ue_id.value()));
+  EXPECT_NE(snapshot->ran_ue_ngap_id, snapshot->amf_ue_ngap_id);
+  ngap->handle_message(generate_valid_ue_context_release_command_with_ue_ngap_id_pair(amf_id, ue.ran_ue_id.value()));
+  EXPECT_FALSE(ngap->get_ue_identity_snapshot(index).has_value());
+  // The previously returned snapshot owns its data and survives context removal.
+  EXPECT_EQ(snapshot->amf_ue_ngap_id, (1ULL << 40) - 1);
+}
+
 /// Test Initial Context Setup Request.
 TEST_F(ngap_ue_context_management_procedure_test, when_valid_initial_context_setup_request_received_then_response_send)
 {

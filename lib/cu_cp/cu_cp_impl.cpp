@@ -65,6 +65,34 @@ static void assert_cu_cp_configuration_valid(const cu_cp_configuration& cfg)
   report_error_if_not(cfg.admission.max_nof_cu_ups <= MAX_NOF_CU_UPS, "Invalid max number of CU-UPs");
 }
 
+void cu_cp_impl::collect_ue_identities(cu_cp_metrics_report& report)
+{
+  if (!cfg.metrics.layers_cfg.enable_ue_identity) {
+    return;
+  }
+  for (auto& item : report.ues) {
+    auto* ue = ue_mng.find_du_ue(item.ue_index);
+    if (ue == nullptr || ue->get_ue_context().reconfiguration_disabled) {
+      continue;
+    }
+    auto* ng = ngap_db.find_ngap(ue->get_ue_context().plmn);
+    auto* du = du_db.find_du_processor(ue->get_du_index());
+    if (ng == nullptr || du == nullptr) {
+      continue;
+    }
+    auto ng_id = ng->get_ue_identity_snapshot(item.ue_index);
+    auto f1_id = du->get_f1ap_handler().get_ue_identity_snapshot(item.ue_index);
+    if (ng_id && f1_id && item.du_id != gnb_du_id_t::invalid) {
+      item.identity = cu_ue_identity{*ng_id, *f1_id, item.du_id};
+      for (const auto& pdu : ue->get_up_resource_manager().get_pdu_sessions_map()) {
+        for (const auto& drb : pdu.second.drbs) {
+          item.slice_ssts.push_back(drb.second.s_nssai.sst.value());
+        }
+      }
+    }
+  }
+}
+
 cu_cp_impl::cu_cp_impl(const cu_cp_configuration& config_) :
   cfg(config_),
   ue_mng(cfg),
@@ -102,7 +130,8 @@ cu_cp_impl::cu_cp_impl(const cu_cp_configuration& config_) :
                                                       ue_mng,
                                                       du_db,
                                                       ngap_db,
-                                                      mobility_mng)),
+                                                      mobility_mng,
+                                                      [this](cu_cp_metrics_report& report) { collect_ue_identities(report); })),
   cu_cp_cfgtr(mobility_manager_ev_notifier, du_db, ngap_db, ue_mng)
 {
   assert_cu_cp_configuration_valid(cfg);

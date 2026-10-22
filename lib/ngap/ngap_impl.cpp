@@ -581,6 +581,7 @@ void ngap_impl::handle_initial_context_setup_request(const asn1::ngap::init_cont
 
   // Store serving PLMN.
   ue_ctxt.serving_guami = init_ctxt_setup_req.guami;
+  ue_ctxt.serving_guami_valid = true;
 
   // Store RRC inactive transition report request if present.
   if (init_ctxt_setup_req.rrc_inactive_transition_report_request.has_value()) {
@@ -665,6 +666,7 @@ void ngap_impl::handle_ue_context_modification_request(const asn1::ngap::ue_cont
   // Store serving PLMN if it is set.
   if (ue_context_mod_request.new_guami.has_value()) {
     ue_ctxt.serving_guami = ue_context_mod_request.new_guami.value();
+    ue_ctxt.serving_guami_valid = true;
   }
 
   // Store UE Aggregate Maximum Bitrate if it is set.
@@ -1628,6 +1630,18 @@ ue_index_t ngap_impl::get_ue_index(const amf_ue_id_t& amf_ue_ngap_id)
     return ue_ctxt.ue_ids.ue_index;
   }
   return ue_index_t::invalid;
+}
+
+std::optional<ngap_ue_identity> ngap_impl::get_ue_identity_snapshot(ue_index_t ue_index) const
+{
+  const auto* ue = ue_ctxt_list.find(ue_index);
+  if (!conn_handler.is_connected() || ue == nullptr || !ue->serving_guami_valid || ue->release_requested || ue->release_scheduled ||
+      ue->ue_ids.amf_ue_id == amf_ue_id_t::invalid) {
+    return std::nullopt;
+  }
+  return ngap_ue_identity{amf_ue_id_to_uint(ue->ue_ids.amf_ue_id),
+                          ran_ue_id_to_uint(ue->ue_ids.ran_ue_id),
+                          ue->serving_guami};
 }
 
 amf_ue_id_t ngap_impl::get_amf_ue_id(const ue_index_t& ue_index)

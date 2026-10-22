@@ -14,6 +14,7 @@
 #include "ocudu/e2/e2sm/e2sm_kpm.h"
 #include "ocudu/f1u/cu_up/f1u_bearer.h"
 #include "ocudu/pdcp/pdcp_entity.h"
+#include <chrono>
 #include <deque>
 #include <map>
 #include <mutex>
@@ -98,11 +99,19 @@ protected:
   metric_meas_getter_func_t get_rrc_reestab_succ_with_ue_context;
   metric_meas_getter_func_t get_rrc_conn_mean;
   metric_meas_getter_func_t get_rrc_conn_max;
+  metric_meas_getter_func_t get_ue_rrc_state;
 
   ocudulog::basic_logger& logger;
 
   std::map<std::string, e2sm_kpm_supported_metric_t>           supported_metrics;
+  // Metrics dispatch and E2 collection run on different executors.
+  std::mutex                                                 cu_cp_metrics_mutex;
   std::optional<cu_cp_metrics_report>                          cu_cp_metrics;
+  std::chrono::steady_clock::time_point cu_cp_metrics_updated{};
+  bool identity_snapshot_is_fresh() const
+  {
+    return cu_cp_metrics && std::chrono::steady_clock::now() - cu_cp_metrics_updated < std::chrono::seconds{3};
+  }
   std::map<uint32_t, std::deque<pdcp_metrics_container>>       ue_aggr_pdcp_metrics;
   std::map<uint32_t, std::deque<ocuup::f1u_metrics_container>> ue_aggr_f1u_metrics;
   const uint32_t                                               max_pdcp_metrics = 10;
@@ -113,6 +122,13 @@ class e2sm_kpm_cu_cp_meas_provider_impl : public e2sm_kpm_cu_meas_provider_impl
 {
 public:
   e2sm_kpm_cu_cp_meas_provider_impl();
+
+  bool is_ue_supported(const asn1::e2sm::ue_id_c& ueid) override;
+  bool is_test_cond_supported(const asn1::e2sm::test_cond_type_c& type) override;
+  bool get_ues_matching_test_conditions(const asn1::e2sm::matching_cond_list_l& conditions,
+                                        std::vector<asn1::e2sm::ue_id_c>& ues) override;
+  bool get_ues_matching_test_conditions(const asn1::e2sm::matching_ue_cond_per_sub_list_l& conditions,
+                                        std::vector<asn1::e2sm::ue_id_c>& ues) override;
 };
 
 class e2sm_kpm_cu_up_meas_provider_impl : public e2sm_kpm_cu_meas_provider_impl

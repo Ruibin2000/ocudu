@@ -194,6 +194,9 @@ public:
   cu_configurator&                       get_cu_configurator() override { return cu_cp_cfgtr; }
 
 private:
+  /// Copy complete local identities on the CU-CP executor into an owned report.
+  void collect_ue_identities(cu_cp_metrics_report& report);
+
   // Handling of DU events.
   void handle_rrc_ue_creation(ue_index_t ue_index, rrc_ue_interface& rrc_ue) override;
 

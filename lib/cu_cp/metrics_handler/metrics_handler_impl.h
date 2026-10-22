@@ -13,6 +13,7 @@
 #include "ocudu/support/executors/task_executor.h"
 #include "ocudu/support/timers.h"
 #include <deque>
+#include <functional>
 #include <mutex>
 
 namespace ocudu {
@@ -26,7 +27,8 @@ public:
                        ue_metrics_handler&               ue_handler_,
                        du_repository_metrics_handler&    du_handler_,
                        ngap_repository_metrics_handler&  ngap_handler_,
-                       mobility_manager_metrics_handler& mobility_handler_);
+                       mobility_manager_metrics_handler& mobility_handler_,
+                       std::function<void(cu_cp_metrics_report&)> identity_collector_ = {});
 
   std::unique_ptr<metrics_report_session>
   create_periodic_report_session(const periodic_metric_report_request& request) override;
@@ -54,6 +56,7 @@ private:
   ngap_repository_metrics_handler&  ngap_handler;
   mobility_manager_metrics_handler& mobility_handler;
   ocudulog::basic_logger&           logger;
+  std::function<void(cu_cp_metrics_report&)> identity_collector;
 
   // Member variables to manage pool of sessions.
   std::mutex                           mutex;

@@ -158,6 +158,16 @@ void f1ap_cu_impl::handle_message(const f1ap_message& msg)
   }
 }
 
+std::optional<f1ap_ue_identity> f1ap_cu_impl::get_ue_identity_snapshot(ue_index_t ue_index) const
+{
+  const auto* ue = ue_ctxt_list.find(ue_index);
+  if (ue == nullptr || ue->marked_for_release || !ue->ue_ids.du_ue_f1ap_id.has_value()) {
+    return std::nullopt;
+  }
+  return f1ap_ue_identity{gnb_cu_ue_f1ap_id_to_uint(ue->ue_ids.cu_ue_f1ap_id),
+                          gnb_du_ue_f1ap_id_to_uint(ue->ue_ids.du_ue_f1ap_id.value())};
+}
+
 void f1ap_cu_impl::remove_ue_context(ue_index_t ue_index)
 {
   if (!ue_ctxt_list.contains(ue_index)) {
