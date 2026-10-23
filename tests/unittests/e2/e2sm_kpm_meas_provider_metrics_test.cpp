@@ -4,6 +4,8 @@
 
 #include "lib/e2/e2sm/e2sm_kpm/e2sm_kpm_cu_meas_provider_impl.h"
 #include "lib/e2/e2sm/e2sm_kpm/e2sm_kpm_du_meas_provider_impl.h"
+#include "lib/e2/e2sm/e2sm_kpm/e2sm_kpm_asn1_packer.h"
+#include <limits>
 #include "tests/unittests/e2/common/e2_test_helpers.h"
 #include "ocudu/ran/du_types.h"
 #include <algorithm>
@@ -465,3 +467,240 @@ TEST_F(e2sm_kpm_cu_cp_meas_provider_metrics_test, e2sm_kpm_cu_cp_returns_expecte
     ASSERT_EQ(meas_records_items[0].integer(), metric.second) << "Unexpected value for metric " << metric.first;
   }
 }
+
+namespace {
+constexpr const char* falcon_rsrp_name = "FALCON.PUSCH.RSRP.dBFS";
+constexpr const char* falcon_snr_name = "FALCON.PUSCH.SNR.dB";
+
+class falcon_sparse_ue_id_translator : public odu::f1ap_ue_id_translator
+{
+public:
+  void remove_ue(du_ue_index_t index) { ids.erase(index); }
+
+  std::optional<gnb_cu_ue_f1ap_id_t> get_gnb_cu_ue_f1ap_id(const du_ue_index_t& index) const override
+  {
+    const auto it = ids.find(index);
+    if (it == ids.end()) {
+      return std::nullopt;
+    }
+    return int_to_gnb_cu_ue_f1ap_id(it->second);
+  }
+
+  std::optional<gnb_cu_ue_f1ap_id_t> get_gnb_cu_ue_f1ap_id(const gnb_du_ue_f1ap_id_t& id) const override
+  {
+    return get_gnb_cu_ue_f1ap_id(to_du_ue_index(gnb_du_ue_f1ap_id_to_uint(id)));
+  }
+
+  gnb_du_ue_f1ap_id_t get_gnb_du_ue_f1ap_id(const du_ue_index_t& index) override
+  {
+    return int_to_gnb_du_ue_f1ap_id(index);
+  }
+
+  gnb_du_ue_f1ap_id_t get_gnb_du_ue_f1ap_id(const gnb_cu_ue_f1ap_id_t& id) override
+  {
+    return int_to_gnb_du_ue_f1ap_id(get_ue_index(id));
+  }
+
+  du_ue_index_t get_ue_index(const gnb_du_ue_f1ap_id_t& id) override
+  {
+    const auto index = to_du_ue_index(gnb_du_ue_f1ap_id_to_uint(id));
+    return ids.count(index) == 0 ? INVALID_DU_UE_INDEX : index;
+  }
+
+  du_ue_index_t get_ue_index(const gnb_cu_ue_f1ap_id_t& id) override
+  {
+    for (const auto& pair : ids) {
+      if (pair.second == gnb_cu_ue_f1ap_id_to_uint(id)) {
+        return pair.first;
+      }
+    }
+    return INVALID_DU_UE_INDEX;
+  }
+
+private:
+  std::map<du_ue_index_t, uint32_t> ids{
+      {to_du_ue_index(7), 1007}, {to_du_ue_index(91), 2091}, {to_du_ue_index(199), 3199}};
+};
+
+ue_id_c make_ue(uint32_t f1ap_id)
+{
+  ue_id_c ue;
+  ue.set_gnb_du_ue_id().gnb_cu_ue_f1ap_id = f1ap_id;
+  return ue;
+}
+
+label_info_list_l make_no_label()
+{
+  label_info_item_s item;
+  item.meas_label.no_label_present = true;
+  item.meas_label.no_label         = meas_label_s::no_label_e_::true_value;
+  label_info_list_l result;
+  result.push_back(item);
+  return result;
+}
+
+scheduler_ue_metrics make_measurement(unsigned index, float power, float snr = 23.75F, unsigned samples = 1)
+{
+  scheduler_ue_metrics result{};
+  result.ue_index      = to_du_ue_index(index);
+  result.pci           = 1;
+  result.rnti          = static_cast<rnti_t>(0x4600 + index);
+  result.pusch_rsrp_db = power;
+  result.pusch_snr_db  = snr; // The PHY-selected ul_sinr_dB value is reported using the SNR name.
+  result.nof_pusch_snr_reports = samples;
+  return result;
+}
+
+class falcon_du_rf_native_test : public ::testing::Test
+{
+protected:
+  falcon_du_rf_native_test() : provider(translator)
+  {
+    metric.set_meas_name().from_string(falcon_rsrp_name);
+  }
+
+  static void SetUpTestSuite() { ocudulog::init(); }
+  void TearDown() override { ocudulog::flush(); }
+
+  void report(std::initializer_list<scheduler_ue_metrics> measurements)
+  {
+    scheduler_cell_metrics snapshot{};
+    for (const auto& measurement : measurements) {
+      snapshot.ue_metrics.push_back(measurement);
+    }
+    provider.report_metrics(snapshot);
+  }
+
+  bool collect(const std::vector<ue_id_c>& ues, std::vector<meas_record_item_c>& output)
+  {
+    return provider.get_meas_data(metric, make_no_label(), ues, std::nullopt, output);
+  }
+
+  bool collect_named(const char* name, const std::vector<ue_id_c>& ues, std::vector<meas_record_item_c>& output)
+  {
+    meas_type_c selected;
+    selected.set_meas_name().from_string(name);
+    return provider.get_meas_data(selected, make_no_label(), ues, std::nullopt, output);
+  }
+
+  falcon_sparse_ue_id_translator              translator;
+  e2sm_kpm_du_meas_provider_impl       provider;
+  meas_type_c                         metric;
+};
+
+
+TEST_F(falcon_du_rf_native_test, sparse_f1ap_mapping_preserves_request_order_and_real_values)
+{
+  report({make_measurement(91, 0.F, 0.F), make_measurement(7, -13.125F, 21.75F)});
+  for (const char* name : {falcon_rsrp_name, falcon_snr_name}) {
+    SCOPED_TRACE(name);
+    std::vector<meas_record_item_c> output;
+    ASSERT_TRUE(collect_named(name, {make_ue(1007), make_ue(3199), make_ue(2091), make_ue(9999)}, output));
+    ASSERT_EQ(output.size(), 4U);
+    ASSERT_EQ(output[0].type(), meas_record_item_c::types::real);
+    EXPECT_DOUBLE_EQ(output[0].real().value, name == falcon_rsrp_name ? -13.125 : 21.75);
+    EXPECT_EQ(output[1].type(), meas_record_item_c::types::no_value);
+    ASSERT_EQ(output[2].type(), meas_record_item_c::types::real);
+    EXPECT_DOUBLE_EQ(output[2].real().value, 0.0);
+    EXPECT_EQ(output[3].type(), meas_record_item_c::types::no_value);
+  }
+}
+
+TEST_F(falcon_du_rf_native_test, nonfinite_values_and_zero_snr_without_samples_are_no_value)
+{
+  for (float invalid : {std::numeric_limits<float>::quiet_NaN(),
+                        std::numeric_limits<float>::infinity(),
+                        -std::numeric_limits<float>::infinity()}) {
+    report({make_measurement(7, invalid, invalid)});
+    for (const char* name : {falcon_rsrp_name, falcon_snr_name}) {
+      std::vector<meas_record_item_c> output;
+      ASSERT_TRUE(collect_named(name, {make_ue(1007)}, output));
+      ASSERT_EQ(output.size(), 1U);
+      EXPECT_EQ(output[0].type(), meas_record_item_c::types::no_value);
+    }
+  }
+  report({make_measurement(7, 0.F, 0.F, 0)});
+  std::vector<meas_record_item_c> output;
+  ASSERT_TRUE(collect_named(falcon_snr_name, {make_ue(1007)}, output));
+  ASSERT_EQ(output.size(), 1U);
+  EXPECT_EQ(output[0].type(), meas_record_item_c::types::no_value);
+  output.clear();
+  ASSERT_TRUE(collect_named(falcon_rsrp_name, {make_ue(1007)}, output));
+  ASSERT_EQ(output.size(), 1U);
+  ASSERT_EQ(output[0].type(), meas_record_item_c::types::real);
+  EXPECT_DOUBLE_EQ(output[0].real().value, 0.0);
+}
+
+TEST_F(falcon_du_rf_native_test, replacement_snapshot_and_unsupported_ue_do_not_reuse_first_ue)
+{
+  report({make_measurement(7, -13.125F, 21.75F)});
+  report({make_measurement(91, -3.5F, 7.25F)});
+  ue_id_c wrong_type;
+  wrong_type.set_gnb_ue_id();
+  for (const char* name : {falcon_rsrp_name, falcon_snr_name}) {
+    std::vector<meas_record_item_c> output;
+    ASSERT_TRUE(collect_named(name, {make_ue(1007), wrong_type, make_ue(2091)}, output));
+    ASSERT_EQ(output.size(), 3U);
+    EXPECT_EQ(output[0].type(), meas_record_item_c::types::no_value);
+    EXPECT_EQ(output[1].type(), meas_record_item_c::types::no_value);
+    ASSERT_EQ(output[2].type(), meas_record_item_c::types::real);
+    EXPECT_DOUBLE_EQ(output[2].real().value, name == falcon_rsrp_name ? -3.5 : 7.25);
+  }
+}
+
+TEST_F(falcon_du_rf_native_test, exactly_one_no_label_and_ue_level_are_required)
+{
+  auto mixed = make_no_label();
+  mixed[0].meas_label.five_qi_present = true;
+  mixed[0].meas_label.five_qi = 9;
+  auto duplicate = make_no_label();
+  duplicate.push_back(duplicate[0]);
+  for (const char* name : {falcon_rsrp_name, falcon_snr_name}) {
+    meas_type_c selected;
+    selected.set_meas_name().from_string(name);
+    EXPECT_TRUE(provider.is_metric_supported(selected, make_no_label()[0].meas_label, UE_LEVEL, false));
+    EXPECT_FALSE(provider.is_metric_supported(selected, make_no_label()[0].meas_label, E2_NODE_LEVEL, false));
+    EXPECT_FALSE(provider.is_metric_supported(selected, make_no_label()[0].meas_label, UE_LEVEL, true));
+    EXPECT_FALSE(provider.is_metric_supported(selected, mixed[0].meas_label, UE_LEVEL, false));
+    for (const auto& labels : {label_info_list_l{}, mixed, duplicate}) {
+      std::vector<meas_record_item_c> output;
+      EXPECT_FALSE(provider.get_meas_data(selected, labels, {make_ue(1007), make_ue(2091)}, std::nullopt, output));
+      ASSERT_EQ(output.size(), 2U);
+      EXPECT_EQ(output[0].type(), meas_record_item_c::types::no_value);
+      EXPECT_EQ(output[1].type(), meas_record_item_c::types::no_value);
+    }
+  }
+}
+
+TEST_F(falcon_du_rf_native_test, production_ran_function_advertises_rf_names_without_dummy_rsrp_rsrq)
+{
+  e2sm_kpm_asn1_packer packer(provider);
+  auto encoded = packer.pack_ran_function_description();
+  ASSERT_FALSE(encoded.empty());
+  asn1::cbit_ref reader(encoded);
+  e2sm_kpm_ran_function_description_s decoded;
+  ASSERT_EQ(decoded.unpack(reader), asn1::OCUDUASN_SUCCESS);
+  unsigned ue_styles = 0;
+  for (const auto& style : decoded.ric_report_style_list) {
+    unsigned rsrp_count = 0;
+    unsigned snr_count = 0;
+    for (const auto& info : style.meas_info_action_list) {
+      const auto name = info.meas_name.to_string();
+      rsrp_count += name == falcon_rsrp_name;
+      snr_count += name == falcon_snr_name;
+      EXPECT_NE(name, "RSRP");
+      EXPECT_NE(name, "RSRQ");
+      EXPECT_NE(name, "FALCON.PUSCH.SINR.dB");
+    }
+    const bool ue_level = style.ric_report_style_type >= 2 && style.ric_report_style_type <= 5;
+    EXPECT_EQ(rsrp_count, ue_level ? 1U : 0U);
+    EXPECT_EQ(snr_count, ue_level ? 1U : 0U);
+    ue_styles += ue_level;
+    if (style.ric_report_style_type == 4) {
+      EXPECT_EQ(style.ric_action_format_type, 4);
+      EXPECT_EQ(style.ric_ind_msg_format_type, 3);
+    }
+  }
+  EXPECT_EQ(ue_styles, 4U);
+}
+} // namespace

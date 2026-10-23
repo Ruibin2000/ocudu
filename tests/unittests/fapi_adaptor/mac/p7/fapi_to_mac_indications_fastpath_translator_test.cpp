@@ -3,6 +3,10 @@
 // Portions of this file may implement 3GPP specifications, which may be subject to additional licensing requirements.
 
 #include "fapi_to_mac_indications_fastpath_translator.h"
+#include "phy_to_fapi_results_event_fastpath_translator.h"
+#include "ocudu/fapi/p7/messages/crc_indication.h"
+#include <limits>
+#include <optional>
 #include "ocudu/fapi/p7/messages/rach_indication.h"
 #include "ocudu/ocudulog/ocudulog.h"
 #include <gtest/gtest.h>
@@ -103,3 +107,124 @@ TEST_F(mac_rach_indication_fixture, CorrectMessageConvertsCorrectly)
 {
   test_pdu();
 }
+
+namespace {
+class falcon_mac_crc_capture : public mac_cell_control_information_handler
+{
+public:
+  std::optional<mac_crc_indication_message> last;
+  void handle_crc(const mac_crc_indication_message& message) override { last = message; }
+  void handle_uci(const mac_uci_indication_message&) override {}
+  void handle_srs(const mac_srs_indication_message&) override {}
+};
+
+class falcon_fapi_crc_bridge : public fapi::p7_indications_notifier
+{
+public:
+  explicit falcon_fapi_crc_bridge(fapi_to_mac_indications_fastpath_translator& mac_) : mac(mac_) {}
+  std::optional<fapi::crc_indication> last;
+  void on_crc_indication(const fapi::crc_indication& message) override
+  {
+    last = message;
+    mac.on_crc_indication(message);
+  }
+  void on_rx_data_indication(const fapi::rx_data_indication&) override {}
+  void on_uci_indication(const fapi::uci_indication&) override {}
+  void on_srs_indication(const fapi::srs_indication&) override {}
+  void on_rach_indication(const fapi::rach_indication&) override {}
+
+private:
+  fapi_to_mac_indications_fastpath_translator& mac;
+};
+
+class falcon_rf_chain_test : public ::testing::Test
+{
+protected:
+  falcon_rf_chain_test() :
+    mac(0, ocudulog::fetch_basic_logger("FAPI")),
+    bridge(mac),
+    phy(0, 1.0F, ocudulog::fetch_basic_logger("FAPI"))
+  {
+    mac.set_cell_crc_handler(capture);
+    phy.set_p7_indications_notifier(bridge);
+  }
+
+  void send(std::optional<float> rsrp, std::optional<float> sinr, bool crc_ok = false)
+  {
+    // A full-scale amplitude reference of 1 gives a zero dBFS calibration offset.
+    // Both translators below are production classes; this test does not clamp or
+    // quantize the input itself.
+    auto result = ul_pusch_results_data::create_discarded(to_rnti(0x4601), slot_point(0, 11), 3);
+    result.csi = channel_state_information(channel_state_information::sinr_type::post_equalization);
+    if (rsrp.has_value()) {
+      result.csi.set_rsrp_dB(*rsrp);
+    }
+    if (sinr.has_value()) {
+      result.csi.set_sinr_dB(channel_state_information::sinr_type::post_equalization, *sinr);
+    }
+    result.decoder_result.tb_crc_ok = crc_ok;
+    bridge.last.reset();
+    capture.last.reset();
+    phy.on_new_pusch_results_data(result);
+  }
+
+  void expect_decoded(float rsrp, float sinr, uint16_t encoded_rsrp, int16_t encoded_sinr, bool crc_ok = false)
+  {
+    ASSERT_TRUE(bridge.last.has_value());
+    ASSERT_TRUE(capture.last.has_value());
+    ASSERT_EQ(capture.last->crcs.size(), 1U);
+    const auto& pdu = capture.last->crcs[0];
+    EXPECT_EQ(bridge.last->pdu.rsrp, encoded_rsrp);
+    EXPECT_EQ(bridge.last->pdu.ul_sinr_metric, encoded_sinr);
+    EXPECT_EQ(capture.last->sl_rx, slot_point(0, 11));
+    EXPECT_EQ(pdu.rnti, to_rnti(0x4601));
+    EXPECT_EQ(pdu.harq_id, 3U);
+    EXPECT_EQ(pdu.tb_crc_success, crc_ok);
+    ASSERT_TRUE(pdu.ul_rsrp_dBFS.has_value());
+    ASSERT_TRUE(pdu.ul_sinr_dB.has_value());
+    EXPECT_FLOAT_EQ(*pdu.ul_rsrp_dBFS, rsrp);
+    EXPECT_FLOAT_EQ(*pdu.ul_sinr_dB, sinr);
+  }
+
+  falcon_mac_crc_capture capture;
+  fapi_to_mac_indications_fastpath_translator mac;
+  falcon_fapi_crc_bridge bridge;
+  phy_to_fapi_results_event_fastpath_translator phy;
+};
+
+TEST_F(falcon_rf_chain_test, missing_phy_values_survive_fapi_sentinels_as_missing_mac_optionals)
+{
+  send({}, {});
+  ASSERT_TRUE(bridge.last.has_value());
+  ASSERT_TRUE(capture.last.has_value());
+  EXPECT_EQ(bridge.last->pdu.rsrp, std::numeric_limits<uint16_t>::max());
+  EXPECT_EQ(bridge.last->pdu.ul_sinr_metric, std::numeric_limits<int16_t>::min());
+  ASSERT_EQ(capture.last->crcs.size(), 1U);
+  EXPECT_FALSE(capture.last->crcs[0].ul_rsrp_dBFS.has_value());
+  EXPECT_FALSE(capture.last->crcs[0].ul_sinr_dB.has_value());
+}
+
+TEST_F(falcon_rf_chain_test, measured_phy_zero_survives_both_translators_with_failed_crc)
+{
+  send(0.F, 0.F);
+  expect_decoded(0.F, 0.F, 1280U, 0);
+}
+
+TEST_F(falcon_rf_chain_test, production_chain_quantizes_rsrp_and_positive_negative_sinr)
+{
+  send(-13.125F, 1.235F);
+  expect_decoded(-13.2F, 1.234F, 1148U, 617);
+  send(-13.125F, -1.235F, true);
+  expect_decoded(-13.2F, -1.234F, 1148U, -617, true);
+}
+
+TEST_F(falcon_rf_chain_test, production_phy_clamps_positive_and_negative_saturation_before_quantization)
+{
+  // IEEE single-precision +/-65.534 is quantized by the production builder to
+  // +/-32766 through float multiplication and truncation, then decoded by MAC.
+  send(200.F, 200.F);
+  expect_decoded(0.F, 65.532F, 1280U, 32766);
+  send(-200.F, -200.F);
+  expect_decoded(-128.F, -65.532F, 0U, -32766);
+}
+} // namespace

@@ -8,10 +8,13 @@ set_directory_properties(PROPERTIES LABELS "fapi_adaptor")
 add_subdirectory(pdu_translators)
 
 add_executable(fapi_to_mac_indications_fastpath_translator_test fapi_to_mac_indications_fastpath_translator_test.cpp)
-target_include_directories(fapi_to_mac_indications_fastpath_translator_test PRIVATE ${CMAKE_SOURCE_DIR}/lib/fapi_adaptor/mac/p7)
+target_include_directories(fapi_to_mac_indications_fastpath_translator_test PRIVATE
+        ${CMAKE_SOURCE_DIR}/lib/fapi_adaptor/mac/p7
+        ${CMAKE_SOURCE_DIR}/lib/fapi_adaptor/phy/p7)
 target_link_libraries(fapi_to_mac_indications_fastpath_translator_test PRIVATE
         ocudu_support
         ocudu_fapi_to_mac_p7_fastpath_translator
+        ocudu_phy_to_fapi_p7_fastpath_translator
         ocudulog
         ocudu_mac_translator_helpers
         gtest
