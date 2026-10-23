@@ -604,9 +604,10 @@ cell_metrics_handler::ue_metric_context::compute_report(std::chrono::millisecond
   ret.dl_nof_nok          = data.count_uci_harqs - data.count_uci_harq_acks;
   ret.ul_nof_ok           = data.count_crc_acks;
   ret.ul_nof_nok          = data.count_crc_pdus - data.count_crc_acks;
-  ret.pusch_snr_db        = data.nof_pusch_snr_reports > 0 ? data.sum_pusch_snrs / data.nof_pusch_snr_reports : 0;
-  ret.pusch_rsrp_db       = data.nof_pusch_rsrp_reports > 0 ? data.sum_pusch_rsrp / data.nof_pusch_rsrp_reports
-                                                            : -std::numeric_limits<float>::infinity();
+  ret.pusch_snr_db          = data.nof_pusch_snr_reports > 0 ? data.sum_pusch_snrs / data.nof_pusch_snr_reports : 0;
+  ret.nof_pusch_snr_reports = data.nof_pusch_snr_reports;
+  ret.pusch_rsrp_db         = data.nof_pusch_rsrp_reports > 0 ? data.sum_pusch_rsrp / data.nof_pusch_rsrp_reports
+                                                           : -std::numeric_limits<float>::infinity();
   ret.ul_ri_stats         = data.ul_ri;
   ret.pucch_snr_db        = data.nof_pucch_snr_reports > 0 ? data.sum_pucch_snrs / data.nof_pucch_snr_reports : 0;
   ret.last_dl_olla        = last_dl_olla;
