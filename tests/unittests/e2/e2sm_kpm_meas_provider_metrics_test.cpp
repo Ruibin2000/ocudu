@@ -6,6 +6,7 @@
 #include "lib/e2/e2sm/e2sm_kpm/e2sm_kpm_du_meas_provider_impl.h"
 #include "lib/e2/e2sm/e2sm_kpm/e2sm_kpm_asn1_packer.h"
 #include <limits>
+#include "lib/e2/e2sm/e2sm_kpm/e2sm_kpm_report_service_impl.h"
 #include "tests/unittests/e2/common/e2_test_helpers.h"
 #include "ocudu/ran/du_types.h"
 #include <algorithm>
@@ -703,4 +704,69 @@ TEST_F(falcon_du_rf_native_test, production_ran_function_advertises_rf_names_wit
   }
   EXPECT_EQ(ue_styles, 4U);
 }
+
+TEST_F(falcon_du_rf_native_test, rlc_throughput_uses_the_actual_100ms_source_window)
+{
+  auto rlc = generate_non_zero_rlc_metrics(7, 1);
+  rlc.metrics_period = std::chrono::milliseconds(100);
+  provider.report_metrics(rlc);
+  for (const auto& expected : {std::make_pair("DRB.UEThpUl", 400.0),
+                              std::make_pair("DRB.UEThpDl", 960.0)}) {
+    std::vector<meas_record_item_c> output;
+    ASSERT_TRUE(collect_named(expected.first, {make_ue(1007)}, output));
+    ASSERT_EQ(output.size(), 1U);
+    ASSERT_EQ(output[0].type(), meas_record_item_c::types::real);
+    EXPECT_DOUBLE_EQ(output[0].real().value, expected.second);
+  }
+}
+
+TEST_F(falcon_du_rf_native_test, style4_100ms_aper_preserves_period_identity_real_zero_and_missing)
+{
+  report({make_measurement(7, -13.125F, 21.75F), make_measurement(91, 0.F, 0.F),
+          make_measurement(199, -std::numeric_limits<float>::infinity(), 0.F, 0)});
+  for (unsigned index : {7U, 91U, 199U}) {
+    auto rlc = generate_non_zero_rlc_metrics(index, 1);
+    rlc.metrics_period = std::chrono::milliseconds(100);
+    provider.report_metrics(rlc);
+  }
+  e2sm_kpm_action_definition_s action;
+  action.ric_style_type = 4;
+  auto& format4 = action.action_definition_formats.set_action_definition_format4();
+  matching_ue_cond_per_sub_item_s condition;
+  condition.test_cond_info.test_type.set_ul_r_srp().value = test_cond_type_c::ul_r_srp_opts::true_value;
+  format4.matching_ue_cond_list.push_back(condition);
+  format4.sub_info.granul_period = 100;
+  for (const char* name : {falcon_rsrp_name, falcon_snr_name}) {
+    meas_info_item_s info;
+    info.meas_type.set_meas_name().from_string(name);
+    info.label_info_list = make_no_label();
+    format4.sub_info.meas_info_list.push_back(info);
+  }
+  e2sm_kpm_report_service_style4 service(action, provider);
+  ASSERT_TRUE(service.collect_measurements());
+  ASSERT_TRUE(service.is_ind_msg_ready());
+  auto wire = service.get_indication_message();
+  e2sm_kpm_ind_msg_s decoded;
+  asn1::cbit_ref input(wire);
+  ASSERT_EQ(decoded.unpack(input), asn1::OCUDUASN_SUCCESS);
+  const auto& reports = decoded.ind_msg_formats.ind_msg_format3().ue_meas_report_list;
+  ASSERT_EQ(reports.size(), 3U);
+  for (unsigned i = 0; i != 3; ++i) {
+    const auto& row = reports[i];
+    EXPECT_EQ(row.ue_id.gnb_du_ue_id().gnb_cu_ue_f1ap_id, i == 0 ? 1007U : i == 1 ? 2091U : 3199U);
+    EXPECT_TRUE(row.meas_report.granul_period_present);
+    EXPECT_EQ(row.meas_report.granul_period, 100U);
+    ASSERT_EQ(row.meas_report.meas_data.size(), 1U);
+    ASSERT_EQ(row.meas_report.meas_data[0].meas_record.size(), 2U);
+    const auto& values = row.meas_report.meas_data[0].meas_record;
+    for (unsigned j = 0; j != 2; ++j) {
+      EXPECT_EQ(values[j].type(), i == 2 ? meas_record_item_c::types::no_value : meas_record_item_c::types::real);
+    }
+    if (i != 2) {
+      EXPECT_DOUBLE_EQ(values[0].real().value, i == 0 ? -13.125 : 0.0);
+      EXPECT_DOUBLE_EQ(values[1].real().value, i == 0 ? 21.75 : 0.0);
+    }
+  }
+}
+
 } // namespace

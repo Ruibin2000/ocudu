@@ -773,7 +773,7 @@ bool e2sm_kpm_du_meas_provider_impl::get_drb_dl_mean_throughput(const asn1::e2sm
     return meas_collected;
   }
   double                       seconds = 1;
-  std::map<uint16_t, unsigned> ue_throughput;
+  std::map<uint16_t, double> ue_throughput;
   for (auto& ue : ue_aggr_rlc_metrics) {
     size_t num_pdu_bytes_with_segmentation;
     if (std::holds_alternative<rlc_um_tx_metrics_lower>(ue.second.front().tx.tx_low.mode_specific)) {
@@ -799,13 +799,12 @@ bool e2sm_kpm_du_meas_provider_impl::get_drb_dl_mean_throughput(const asn1::e2sm
           return sum + metric.tx.tx_low.num_pdu_bytes_no_segmentation;
         });
     num_pdu_bytes_no_segmentation /= ue.second.size();
-    seconds = (float)std::chrono::duration_cast<std::chrono::milliseconds>(ue.second.back().metrics_period).count() /
-              (float)1000;
+    seconds = std::chrono::duration<double>(ue.second.back().metrics_period).count();
     ue_throughput[ue.first] = bytes_to_kbits(num_pdu_bytes_no_segmentation + num_pdu_bytes_with_segmentation) / seconds;
   }
   if (ues.empty()) {
     meas_record_item_c meas_record_item;
-    int                total_throughput = 0;
+    double             total_throughput = 0;
     for (auto& ue : ue_throughput) {
       total_throughput += ue.second;
     }
@@ -847,20 +846,19 @@ bool e2sm_kpm_du_meas_provider_impl::get_drb_ul_mean_throughput(const asn1::e2sm
   }
 
   double                       seconds = 1;
-  std::map<uint16_t, unsigned> ue_throughput;
+  std::map<uint16_t, double> ue_throughput;
   for (auto& ue : ue_aggr_rlc_metrics) {
     auto num_pdu_bytes =
         std::accumulate(ue.second.begin(), ue.second.end(), 0, [](size_t sum, const rlc_metrics& metric) {
           return sum + metric.rx.num_pdu_bytes;
         });
     num_pdu_bytes /= ue.second.size();
-    seconds = (float)std::chrono::duration_cast<std::chrono::milliseconds>(ue.second.back().metrics_period).count() /
-              (float)1000;
+    seconds = std::chrono::duration<double>(ue.second.back().metrics_period).count();
     ue_throughput[ue.first] = bytes_to_kbits(num_pdu_bytes) / seconds; // unit is kbps
   }
   if (ues.empty()) {
     meas_record_item_c meas_record_item;
-    int                total_throughput = 0;
+    double             total_throughput = 0;
     for (auto& ue : ue_throughput) {
       total_throughput += ue.second;
     }
