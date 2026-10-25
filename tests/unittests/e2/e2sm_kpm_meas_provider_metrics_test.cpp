@@ -469,8 +469,8 @@ TEST_F(e2sm_kpm_cu_cp_meas_provider_metrics_test, e2sm_kpm_cu_cp_returns_expecte
 }
 
 namespace {
-constexpr const char* falcon_rsrp_name = "FALCON.PUSCH.RSRP.dBFS";
-constexpr const char* falcon_snr_name = "FALCON.PUSCH.SNR.dB";
+constexpr const char* falcon_rsrp_name = "PUSCH.RSRP.dBFS";
+constexpr const char* falcon_snr_name = "PUSCH.SNR.dB";
 
 class falcon_sparse_ue_id_translator : public odu::f1ap_ue_id_translator
 {

@@ -14,9 +14,9 @@ namespace {
 
 // Vendor metric: scheduler-window PUSCH DM-RS received power in the DU's software dBFS scale.
 // This is not a UE-reported downlink measurement or the standard UL SRS RSRP measurement.
-constexpr char pusch_rsrp_metric_name[] = "FALCON.PUSCH.RSRP.dBFS";
+constexpr char pusch_rsrp_metric_name[] = "PUSCH.RSRP.dBFS";
 // SNR is the wire/display name for the configured PHY estimator's selected value (ul_sinr_dB).
-constexpr char pusch_snr_metric_name[] = "FALCON.PUSCH.SNR.dB";
+constexpr char pusch_snr_metric_name[] = "PUSCH.SNR.dB";
 
 bool has_only_no_label(const meas_label_s& label)
 {
