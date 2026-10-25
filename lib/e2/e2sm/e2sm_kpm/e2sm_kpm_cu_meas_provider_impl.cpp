@@ -58,6 +58,12 @@ e2sm_kpm_cu_cp_meas_provider_impl::e2sm_kpm_cu_cp_meas_provider_impl() : e2sm_kp
 
 namespace {
 
+bool has_usable_identity(const cu_cp_metrics_report::ue_info& ue)
+{
+  return ue.identity && ue.identity->du_id != gnb_du_id_t::invalid &&
+         ue.ue_index != ocucp::ue_index_t::invalid && static_cast<uint64_t>(ue.ue_index) < (uint64_t{1} << 28);
+}
+
 ue_id_c make_identity(const cu_cp_metrics_report::ue_info& ue)
 {
   ue_id_c result;
@@ -70,6 +76,14 @@ ue_id_c make_identity(const cu_cp_metrics_report::ue_info& ue)
   id.guami.amf_pointer.from_number(identity.ngap.guami.amf_pointer);
   id.gnb_cu_ue_f1ap_id_list.resize(1);
   id.gnb_cu_ue_f1ap_id_list[0].gnb_cu_ue_f1ap_id = identity.f1.cu_ue_f1ap_id;
+  // Locally allocated RAN UE identity, using the existing optional 8-octet IE.
+  // du36-cuue28-v1: full 36-bit serving DU ID followed by the CU UE index.
+  // This is an opaque RAN UE ID on the wire, not an extra measurement. Only
+  // consumers explicitly configured for this allocation may interpret it.
+  // The CU index distinguishes simultaneously active contexts; it is NOT a
+  // lifecycle generation counter. Reuse still requires conservative handling.
+  id.ran_ue_id_present = true;
+  id.ran_ue_id.from_number((gnb_du_id_to_int(identity.du_id) << 28) | static_cast<uint64_t>(ue.ue_index));
   return result;
 }
 
@@ -93,7 +107,7 @@ bool e2sm_kpm_cu_cp_meas_provider_impl::is_ue_supported(const ue_id_c& id)
     return false;
   }
   return std::any_of(cu_cp_metrics->ues.begin(), cu_cp_metrics->ues.end(), [&](const auto& ue) {
-    return ue.identity && make_identity(ue) == id;
+    return has_usable_identity(ue) && make_identity(ue) == id;
   });
 }
 
@@ -111,7 +125,7 @@ bool e2sm_kpm_cu_cp_meas_provider_impl::get_ues_matching_test_conditions(
     return true;
   }
   for (const auto& ue : cu_cp_metrics->ues) {
-    if (!ue.identity || ue.rrc_connection_state != ocucp::rrc_state::connected) {
+    if (!has_usable_identity(ue) || ue.rrc_connection_state != ocucp::rrc_state::connected) {
       continue;
     }
     bool matches = std::all_of(conditions.begin(), conditions.end(), [&](const auto& condition) {
@@ -133,7 +147,7 @@ bool e2sm_kpm_cu_cp_meas_provider_impl::get_ues_matching_test_conditions(
     return true;
   }
   for (const auto& ue : cu_cp_metrics->ues) {
-    if (!ue.identity || ue.rrc_connection_state != ocucp::rrc_state::connected) {
+    if (!has_usable_identity(ue) || ue.rrc_connection_state != ocucp::rrc_state::connected) {
       continue;
     }
     bool matches = std::all_of(conditions.begin(), conditions.end(), [&](const auto& condition) {
@@ -166,7 +180,7 @@ bool e2sm_kpm_cu_meas_provider_impl::get_ue_rrc_state(const label_info_list_l la
     item.set_no_value();
     if (identity_snapshot_is_fresh()) {
       for (const auto& ue : cu_cp_metrics->ues) {
-        if (ue.identity && make_identity(ue) == id) {
+        if (has_usable_identity(ue) && make_identity(ue) == id) {
           item.set_integer() = static_cast<unsigned>(ue.rrc_connection_state);
           break;
         }

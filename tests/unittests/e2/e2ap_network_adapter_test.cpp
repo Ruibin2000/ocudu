@@ -8,6 +8,7 @@
 #include "tests/unittests/e2/common/e2_test_helpers.h"
 #include "ocudu/e2/e2_node_component_config_collector.h"
 #include "ocudu/e2/e2ap_configuration_helpers.h"
+#include "ocudu/e2/e2ap_config_translators.h"
 #include "ocudu/e2/e2sm/e2sm_manager.h"
 #include "ocudu/e2/gateways/e2_connection_client.h"
 #include "ocudu/e2/gateways/e2_network_client_factory.h"
@@ -63,20 +64,18 @@ protected:
     ASSERT_NE(ric_gw_port.value(), 0);
 
     // create E2 agent
-    sctp_network_connector_config e2agent_config;
-    e2agent_config.dest_name         = "NearRT-RIC";
-    e2agent_config.if_name           = "E2";
-    e2agent_config.connect_addresses = {"127.0.0.1"};
-    e2agent_config.connect_port      = ric_gw_port.value();
-    e2agent_config.bind_addresses    = {"127.0.0.101"};
-    e2agent_config.bind_port         = 0;
+    e2_config network_config;
+    network_config.ip_addrs   = {"127.0.0.1"};
+    network_config.port       = ric_gw_port.value();
+    network_config.bind_addrs = {"127.0.0.101"};
 
     cfg                  = config_helpers::make_default_e2ap_config();
     cfg.e2sm_kpm_enabled = true;
 
     pcap      = std::make_unique<dummy_e2ap_pcap>();
-    e2_client = create_e2_gateway_client(
-        e2_sctp_gateway_config{e2agent_config, *agent_broker, rx_executor, *pcap, ocudulog::fetch_basic_logger("E2")});
+    auto client_config = generate_e2_client_gateway_config(network_config, *agent_broker, rx_executor, *pcap, NGAP_PPID);
+    ASSERT_EQ(client_config.sctp.nodelay, std::optional<bool>{true});
+    e2_client = create_e2_gateway_client(client_config);
     e2_client_wrapper = std::make_unique<e2_connection_client_wrapper>(*e2_client);
     du_metrics        = std::make_unique<dummy_e2_du_metrics>();
     du_meas_provider  = std::make_unique<dummy_e2sm_kpm_du_meas_provider>();

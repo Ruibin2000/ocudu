@@ -649,6 +649,9 @@ TEST(cu_identity, standard_ueid_contains_amf_and_f1_and_real_state)
   ASSERT_EQ(ids.size(), 2U);
   ASSERT_EQ(ids[0].gnb_ue_id().amf_ue_ngap_id, 1ULL << 39);
   ASSERT_EQ(ids[0].gnb_ue_id().gnb_cu_ue_f1ap_id_list[0].gnb_cu_ue_f1ap_id, 1007U);
+  ASSERT_TRUE(ids[0].gnb_ue_id().ran_ue_id_present);
+  ASSERT_EQ(ids[0].gnb_ue_id().ran_ue_id.to_number(), (uint64_t{1} << 28) | 42U);
+  ASSERT_EQ(ids[1].gnb_ue_id().ran_ue_id.to_number(), (uint64_t{2} << 28) | 43U);
   ASSERT_TRUE(provider.is_ue_supported(ids[0]));
 
   asn1::e2sm::label_info_list_l labels;
@@ -721,6 +724,7 @@ TEST(cu_identity, style4_subscription_repeated_collection_preserves_ue_identity)
   cu_cp_metrics_report report;
   cu_cp_metrics_report::ue_info ue{};
   ue.rrc_connection_state = ocucp::rrc_state::connected;
+  ue.ue_index = static_cast<ocucp::ue_index_t>(7);
   guami_t guami{};
   guami.plmn = plmn_identity::parse("00101").value();
   ue.identity = ocucp::cu_ue_identity{{0, 301, guami}, {1007, 9}, int_to_gnb_du_id(2)};
@@ -765,6 +769,66 @@ TEST(cu_identity, style4_subscription_repeated_collection_preserves_ue_identity)
   EXPECT_EQ(rows[0].meas_report.meas_data[1].meas_record[0].integer(), 1U);
 }
 
+TEST(cu_identity, duplicate_per_du_f1_ids_have_distinct_scoped_ran_identities)
+{
+  e2sm_kpm_cu_cp_meas_provider_impl provider;
+  cu_cp_metrics_report report;
+  for (unsigned i = 0; i < 2; ++i) {
+    cu_cp_metrics_report::ue_info ue{};
+    ue.ue_index = static_cast<ocucp::ue_index_t>(42 + i);
+    ue.rrc_connection_state = ocucp::rrc_state::connected;
+    guami_t guami{};
+    guami.plmn = plmn_identity::parse("00101").value();
+    guami.amf_region_id = 2;
+    guami.amf_set_id = 1;
+    guami.amf_pointer = 0;
+    ue.identity = ocucp::cu_ue_identity{{(1ULL << 39) + i, 301 + i, guami}, {1, 1}, int_to_gnb_du_id(i + 1)};
+    ue.slice_ssts = {1};
+    report.ues.push_back(ue);
+  }
+  provider.report_metrics(report);
+  std::vector<asn1::e2sm::ue_id_c> ids;
+  asn1::e2sm::matching_ue_cond_per_sub_list_l conditions;
+  ASSERT_TRUE(provider.get_ues_matching_test_conditions(conditions, ids));
+  ASSERT_EQ(ids.size(), 2U);
+  EXPECT_EQ(ids[0].gnb_ue_id().gnb_cu_ue_f1ap_id_list[0].gnb_cu_ue_f1ap_id, 1U);
+  EXPECT_EQ(ids[1].gnb_ue_id().gnb_cu_ue_f1ap_id_list[0].gnb_cu_ue_f1ap_id, 1U);
+  EXPECT_NE(ids[0].gnb_ue_id().ran_ue_id.to_number(), ids[1].gnb_ue_id().ran_ue_id.to_number());
+  asn1::e2sm::e2sm_kpm_ind_msg_s message;
+  auto& rows = message.ind_msg_formats.set_ind_msg_format3().ue_meas_report_list;
+  rows.resize(2);
+  for (unsigned i = 0; i < 2; ++i) {
+    rows[i].ue_id = ids[i];
+    auto& measurement = rows[i].meas_report;
+    measurement.meas_info_list.resize(1);
+    measurement.meas_info_list[0].meas_type.set_meas_name().from_string("FALCON.UE.RRCState");
+    measurement.meas_info_list[0].label_info_list.resize(1);
+    measurement.meas_info_list[0].label_info_list[0].meas_label.no_label_present = true;
+    measurement.meas_info_list[0].label_info_list[0].meas_label.no_label =
+        asn1::e2sm::meas_label_s::no_label_e_::true_value;
+    measurement.meas_data.resize(1);
+    asn1::e2sm::meas_record_item_c state;
+    state.set_integer() = 1;
+    measurement.meas_data[0].meas_record.push_back(state);
+    measurement.granul_period_present = true;
+    measurement.granul_period = 1000;
+  }
+  byte_buffer bytes;
+  asn1::bit_ref writer(bytes);
+  ASSERT_EQ(message.pack(writer), asn1::OCUDUASN_SUCCESS);
+  asn1::e2sm::e2sm_kpm_ind_msg_s decoded;
+  asn1::cbit_ref reader(bytes);
+  ASSERT_EQ(decoded.unpack(reader), asn1::OCUDUASN_SUCCESS);
+  const auto& result = decoded.ind_msg_formats.ind_msg_format3().ue_meas_report_list;
+  EXPECT_EQ(result[0].ue_id.gnb_ue_id().ran_ue_id.to_number(), (uint64_t{1} << 28) | 42U);
+  EXPECT_EQ(result[1].ue_id.gnb_ue_id().ran_ue_id.to_number(), (uint64_t{2} << 28) | 43U);
+  if (const char* directory = std::getenv("FALCON_IDENTITY_FIXTURE_DIR")) {
+    std::ofstream file(std::string(directory) + "/cu_scope_message.asn", std::ios::binary);
+    for (auto byte : bytes) file.put(static_cast<char>(byte));
+    ASSERT_TRUE(file.good());
+  }
+}
+
 TEST(cu_identity, incomplete_context_is_never_published)
 {
   e2sm_kpm_cu_cp_meas_provider_impl provider;
@@ -774,6 +838,29 @@ TEST(cu_identity, incomplete_context_is_never_published)
   provider.report_metrics(report);
   std::vector<asn1::e2sm::ue_id_c> ids;
   asn1::e2sm::matching_ue_cond_per_sub_list_l conditions;
+  ASSERT_TRUE(provider.get_ues_matching_test_conditions(conditions, ids));
+  EXPECT_TRUE(ids.empty());
+}
+
+TEST(cu_identity, scoped_ran_identity_preserves_bounds_without_truncation)
+{
+  e2sm_kpm_cu_cp_meas_provider_impl provider;
+  cu_cp_metrics_report report;
+  cu_cp_metrics_report::ue_info ue{};
+  ue.ue_index = static_cast<ocucp::ue_index_t>((uint64_t{1} << 28) - 1);
+  ue.rrc_connection_state = ocucp::rrc_state::connected;
+  guami_t guami{};
+  guami.plmn = plmn_identity::parse("00101").value();
+  ue.identity = ocucp::cu_ue_identity{{1, 2, guami}, {1, 1}, gnb_du_id_t::max};
+  report.ues.push_back(ue);
+  provider.report_metrics(report);
+  std::vector<asn1::e2sm::ue_id_c> ids;
+  asn1::e2sm::matching_ue_cond_per_sub_list_l conditions;
+  ASSERT_TRUE(provider.get_ues_matching_test_conditions(conditions, ids));
+  ASSERT_EQ(ids.size(), 1U);
+  EXPECT_EQ(ids[0].gnb_ue_id().ran_ue_id.to_number(), std::numeric_limits<uint64_t>::max());
+  report.ues[0].ue_index = static_cast<ocucp::ue_index_t>(uint64_t{1} << 28);
+  provider.report_metrics(report);
   ASSERT_TRUE(provider.get_ues_matching_test_conditions(conditions, ids));
   EXPECT_TRUE(ids.empty());
 }

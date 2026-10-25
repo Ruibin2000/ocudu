@@ -23,6 +23,9 @@ inline e2_sctp_gateway_config generate_e2_client_gateway_config(const e2_config&
   e2ap_sctp.connect_port      = e2_cfg.port;
   e2ap_sctp.ppid              = ppid;
   e2ap_sctp.bind_addresses    = e2_cfg.bind_addrs;
+  // Periodic KPM indications are small messages. Do not hold a later 100 ms
+  // indication behind an unacknowledged message and the peer's delayed SACK.
+  e2ap_sctp.nodelay           = true;
 
   const std::string logger_id = (ppid == E2_DU_PPID)   ? "E2-DU"
                                 : (ppid == E2_UP_PPID) ? "E2-CU-UP"
