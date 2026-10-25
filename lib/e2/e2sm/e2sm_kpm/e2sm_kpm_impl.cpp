@@ -64,6 +64,13 @@ bool e2sm_kpm_impl::process_action_def_meas_info_list(const meas_info_list_l&   
     meas_type_c meas_type = meas_info_list[i].meas_type;
     std::string meas_name = meas_info_list[i].meas_type.meas_name().to_string();
 
+    // The vendor PUSCH RF metrics have one unfiltered record per UE, with no label expansion.
+    if ((meas_name == "PUSCH.RSRP.dBFS" || meas_name == "PUSCH.SNR.dB") &&
+        meas_info_list[i].label_info_list.size() != 1) {
+      logger.debug("Metric {} requires exactly one NO_LABEL entry.", meas_name);
+      return false;
+    }
+
     for (uint32_t l = 0; l < meas_info_list[i].label_info_list.size(); l++) {
       const meas_label_s& meas_label = meas_info_list[i].label_info_list[l].meas_label;
       if (du_meas_provider.is_metric_supported(meas_type, meas_label, level, cell_scope)) {
@@ -152,6 +159,23 @@ bool e2sm_kpm_impl::process_action_definition_format3(const e2sm_kpm_action_defi
 
   for (uint32_t i = 0; i < action_definition.meas_cond_list.size(); ++i) {
     const meas_type_c& meas_type = action_definition.meas_cond_list[i].meas_type;
+    const bool is_pusch_rf = meas_type.type() == meas_type_c::types_opts::meas_name &&
+                             (meas_type.meas_name().to_string() == "PUSCH.RSRP.dBFS" ||
+                              meas_type.meas_name().to_string() == "PUSCH.SNR.dB");
+    if (is_pusch_rf) {
+      // UE-selection test conditions do not count as measurement labels.
+      unsigned nof_labels = 0;
+      for (const auto& condition : action_definition.meas_cond_list[i].matching_cond) {
+        if (condition.matching_cond_choice.type() == matching_cond_item_choice_c::types_opts::meas_label) {
+          ++nof_labels;
+        }
+      }
+      if (cell_scope || nof_labels != 1) {
+        logger.debug("Metric {} requires exactly one NO_LABEL entry and no cell filter.",
+                     meas_type.meas_name().to_string());
+        return false;
+      }
+    }
     for (uint32_t m = 0; m < action_definition.meas_cond_list[i].matching_cond.size(); ++m) {
       const matching_cond_item_s&        matching_cond_item = action_definition.meas_cond_list[i].matching_cond[m];
       matching_cond_item_choice_c::types test_type          = matching_cond_item.matching_cond_choice.type();

@@ -38,9 +38,9 @@ struct scheduler_ue_metrics {
   unsigned dl_nof_ok;
   /// Number of detected HARQ NACKs or HARQ-ACK misdetections.
   unsigned dl_nof_nok;
-  /// SNR in dB estimated for the PUSCH.
+  /// PHY-selected PUSCH value in dB, reported with the existing SNR name.
   float pusch_snr_db;
-  /// RSRP in dB estimated for the PUSCH.
+  /// PUSCH DM-RS RSRP estimated in software dBFS.
   float pusch_rsrp_db;
   /// SNR in dB estimated for the PUCCH.
   float pucch_snr_db;
@@ -98,6 +98,8 @@ struct scheduler_ue_metrics {
   sample_statistics<unsigned> dl_ri_stats;
   /// UL RI statistics over the metrics report interval.
   sample_statistics<unsigned> ul_ri_stats;
+  /// Number of available PUSCH SNR reports in this window. A measured 0 dB is valid.
+  unsigned nof_pusch_snr_reports = 0;
 };
 
 /// \brief Event that occurred in the cell of the scheduler.

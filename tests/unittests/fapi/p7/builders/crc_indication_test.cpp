@@ -87,3 +87,27 @@ TEST(crc_indication_builder, valid_indication_with_no_metrics_passes)
   ASSERT_EQ(static_cast<uint16_t>(rssi_dB ? (rssi_dB.value() + 128) * 10.F : 65535), msg.pdu.rssi);
   ASSERT_EQ(static_cast<uint16_t>(ul_sinr_dB ? ul_sinr_dB.value() * 500.F : 65535), msg.pdu.rsrp);
 }
+
+TEST(crc_indication_builder, falcon_rf_measured_zero_is_distinct_from_missing_sentinels)
+{
+  crc_indication msg;
+  crc_indication_builder builder(msg);
+  builder.set_pdu(to_rnti(10), to_harq_id(0), false, 0.F, {}, {}, 0.F);
+  EXPECT_EQ(msg.pdu.ul_sinr_metric, 0);
+  EXPECT_EQ(msg.pdu.rsrp, 1280U);
+  builder.set_pdu(to_rnti(10), to_harq_id(0), false, {}, {}, {}, {});
+  EXPECT_EQ(msg.pdu.ul_sinr_metric, std::numeric_limits<int16_t>::min());
+  EXPECT_EQ(msg.pdu.rsrp, std::numeric_limits<uint16_t>::max());
+}
+
+TEST(crc_indication_builder, falcon_rf_wire_quantization_truncates_fractional_rsrp_and_signed_sinr)
+{
+  crc_indication msg;
+  crc_indication_builder builder(msg);
+  builder.set_pdu(to_rnti(10), to_harq_id(0), false, 1.235F, {}, {}, -13.125F);
+  EXPECT_EQ(msg.pdu.rsrp, 1148U);
+  EXPECT_EQ(msg.pdu.ul_sinr_metric, 617);
+  builder.set_pdu(to_rnti(10), to_harq_id(0), false, -1.235F, {}, {}, -13.125F);
+  EXPECT_EQ(msg.pdu.rsrp, 1148U);
+  EXPECT_EQ(msg.pdu.ul_sinr_metric, -617);
+}

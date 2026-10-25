@@ -83,11 +83,17 @@ private:
   bool  handle_no_meas_data_available(const std::vector<asn1::e2sm::ue_id_c>&        ues,
                                       std::vector<asn1::e2sm::meas_record_item_c>&   items,
                                       asn1::e2sm::meas_record_item_c::types::options value_type);
+  enum class pusch_rf_metric { rsrp, snr };
+  bool get_pusch_rf_measurement(pusch_rf_metric                              metric_type,
+                                const asn1::e2sm::label_info_list_l          label_info_list,
+                                const std::vector<asn1::e2sm::ue_id_c>&      ues,
+                                const std::optional<asn1::e2sm::cgi_c>       cell_global_id,
+                                std::vector<asn1::e2sm::meas_record_item_c>& items);
 
   // Measurement getter functions.
   metric_meas_getter_func_t get_cqi;
   metric_meas_getter_func_t get_rsrp;
-  metric_meas_getter_func_t get_rsrq;
+  metric_meas_getter_func_t get_snr;
   metric_meas_getter_func_t get_prb_avail_dl;
   metric_meas_getter_func_t get_prb_avail_ul;
   metric_meas_getter_func_t get_prb_used_dl;

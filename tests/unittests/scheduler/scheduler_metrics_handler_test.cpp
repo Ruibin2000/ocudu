@@ -310,3 +310,64 @@ TEST_F(scheduler_metrics_handler_tester, compute_error_indications)
   this->get_next_metric();
   ASSERT_EQ(metrics_notif.last_report.nof_error_indications, 0);
 }
+
+TEST_F(scheduler_metrics_handler_tester, falcon_rf_failed_crc_samples_contribute_independent_db_means)
+{
+  get_next_metric();
+  ul_crc_pdu_indication crc{};
+  crc.rnti = to_rnti(0x4601);
+  crc.ue_index = test_ue_index;
+  crc.tb_crc_success = false;
+  crc.ul_sinr_dB = 22.F;
+  crc.ul_rsrp_dBFS = -15.F;
+  metrics.handle_crc_indication(next_sl_tx.without_hyper_sfn() - 1, crc, units::bytes{1});
+  crc.tb_crc_success = true;
+  crc.ul_sinr_dB = 20.F;
+  crc.ul_rsrp_dBFS = -12.F;
+  metrics.handle_crc_indication(next_sl_tx.without_hyper_sfn() - 1, crc, units::bytes{1});
+  crc.tb_crc_success = false;
+  crc.ul_sinr_dB.reset();
+  crc.ul_rsrp_dBFS = 0.F;
+  metrics.handle_crc_indication(next_sl_tx.without_hyper_sfn() - 1, crc, units::bytes{1});
+  get_next_metric();
+  const auto& ue = metrics_notif.last_report.ue_metrics[0];
+  EXPECT_EQ(ue.ul_nof_ok, 1U);
+  EXPECT_EQ(ue.ul_nof_nok, 2U);
+  EXPECT_EQ(ue.nof_pusch_snr_reports, 2U);
+  EXPECT_FLOAT_EQ(ue.pusch_snr_db, 21.F);
+  EXPECT_FLOAT_EQ(ue.pusch_rsrp_db, -9.F);
+}
+
+TEST_F(scheduler_metrics_handler_tester, falcon_rf_valid_zero_has_a_sample_and_window_reset_clears_it)
+{
+  get_next_metric();
+  ul_crc_pdu_indication crc{};
+  crc.rnti = to_rnti(0x4601);
+  crc.ue_index = test_ue_index;
+  crc.tb_crc_success = false;
+  crc.ul_sinr_dB = 0.F;
+  crc.ul_rsrp_dBFS = 0.F;
+  metrics.handle_crc_indication(next_sl_tx.without_hyper_sfn() - 1, crc, units::bytes{1});
+  get_next_metric();
+  ASSERT_EQ(metrics_notif.last_report.ue_metrics.size(), 1U);
+  EXPECT_EQ(metrics_notif.last_report.ue_metrics[0].nof_pusch_snr_reports, 1U);
+  EXPECT_FLOAT_EQ(metrics_notif.last_report.ue_metrics[0].pusch_snr_db, 0.F);
+  EXPECT_FLOAT_EQ(metrics_notif.last_report.ue_metrics[0].pusch_rsrp_db, 0.F);
+  get_next_metric();
+  EXPECT_EQ(metrics_notif.last_report.ue_metrics[0].nof_pusch_snr_reports, 0U);
+  EXPECT_FLOAT_EQ(metrics_notif.last_report.ue_metrics[0].pusch_snr_db, 0.F);
+  EXPECT_EQ(metrics_notif.last_report.ue_metrics[0].pusch_rsrp_db, -std::numeric_limits<float>::infinity());
+}
+
+TEST_F(scheduler_metrics_handler_tester, falcon_rf_missing_optional_values_do_not_increment_snr_count)
+{
+  get_next_metric();
+  ul_crc_pdu_indication crc{};
+  crc.rnti = to_rnti(0x4601);
+  crc.ue_index = test_ue_index;
+  crc.tb_crc_success = true;
+  metrics.handle_crc_indication(next_sl_tx.without_hyper_sfn() - 1, crc, units::bytes{1});
+  get_next_metric();
+  EXPECT_EQ(metrics_notif.last_report.ue_metrics[0].nof_pusch_snr_reports, 0U);
+  EXPECT_EQ(metrics_notif.last_report.ue_metrics[0].pusch_rsrp_db, -std::numeric_limits<float>::infinity());
+}
