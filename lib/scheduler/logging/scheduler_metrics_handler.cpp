@@ -309,11 +309,18 @@ void cell_metrics_handler::handle_ul_bsr_indication(const ul_bsr_indication_mess
   if (ues.contains(bsr.ue_index)) {
     auto& u = ues[bsr.ue_index];
 
-    // Store last BSR.
-    u.last_bsr = 0;
+    // Store the sum in this indication; BSR format/partial-LCG behavior is unchanged.
+    uint64_t bytes = 0;
     // TODO: Handle different BSR formats.
     for (unsigned i = 0; i != bsr.reported_lcgs.size(); ++i) {
-      u.last_bsr += bsr.reported_lcgs[i].nof_bytes;
+      bytes += bsr.reported_lcgs[i].nof_bytes;
+    }
+    if (bsr.reported_lcgs.empty() || bytes > std::numeric_limits<unsigned>::max()) {
+      u.last_bsr = 0;
+      u.last_bsr_update.reset();
+    } else {
+      u.last_bsr = static_cast<unsigned>(bytes);
+      u.last_bsr_update = std::chrono::steady_clock::now();
     }
   }
 }
@@ -331,6 +338,7 @@ void cell_metrics_handler::handle_ul_phr_indication(const ul_phr_indication_mess
       // Log the floor of the average of the PH interval.
       interval<int> rg = phr_ind.phr.get_phr().front().ph;
       u.last_phr       = (rg.start() + rg.stop()) / 2;
+      u.last_phr_update = std::chrono::steady_clock::now();
       auto diff        = last_slot_tx.without_hyper_sfn() - phr_ind.slot_rx;
       u.data.sum_ul_ce_delay_slots += diff;
       u.data.max_ul_ce_delay_slots = std::max(static_cast<unsigned>(diff), u.data.max_ul_ce_delay_slots);
@@ -349,6 +357,7 @@ void cell_metrics_handler::handle_dl_buffer_state_indication(const dl_buffer_sta
 
     // Store last DL buffer state.
     u.last_dl_bs[dl_bs.lcid] = dl_bs.bs;
+    u.last_dl_buffer_update = std::chrono::steady_clock::now();
   }
 }
 
@@ -596,6 +605,8 @@ cell_metrics_handler::ue_metric_context::compute_report(std::chrono::millisecond
   ret.dl_mcs              = sch_mcs_index{mcs};
   mcs                     = data.nof_puschs > 0 ? std::round(static_cast<float>(data.ul_mcs) / data.nof_puschs) : 0;
   ret.ul_mcs              = sch_mcs_index{mcs};
+  ret.nof_dl_mcs_reports  = data.nof_dl_cws;
+  ret.nof_ul_mcs_reports  = data.nof_puschs;
   ret.tot_pdsch_prbs_used = data.tot_dl_prbs_used;
   ret.tot_pusch_prbs_used = data.tot_ul_prbs_used;
   ret.dl_brate_kbps       = static_cast<double>(data.sum_dl_tb_bytes * 8U) / metric_report_period.count();
@@ -614,15 +625,29 @@ cell_metrics_handler::ue_metric_context::compute_report(std::chrono::millisecond
   ret.last_ul_olla        = last_ul_olla;
   ret.bsr                 = last_bsr;
   ret.sr_count            = data.count_sr;
-  ret.dl_bs               = 0;
+  uint64_t dl_buffer_bytes = 0;
   for (const unsigned value : last_dl_bs) {
-    ret.dl_bs += value;
+    dl_buffer_bytes += value;
   }
+  ret.dl_bs = dl_buffer_bytes <= std::numeric_limits<unsigned>::max() ? dl_buffer_bytes : 0;
   ret.ta_stats                       = data.ta;
   ret.pusch_ta_stats                 = data.pusch_ta;
   ret.pucch_ta_stats                 = data.pucch_ta;
   ret.srs_ta_stats                   = data.srs_ta;
   ret.last_phr                       = last_phr;
+  const auto now = std::chrono::steady_clock::now();
+  auto age_ms = [now](const std::optional<std::chrono::steady_clock::time_point>& updated) -> std::optional<double> {
+    if (!updated.has_value()) {
+      return std::nullopt;
+    }
+    return std::chrono::duration<double, std::milli>(now - *updated).count();
+  };
+  ret.phr_age_ms       = age_ms(last_phr_update);
+  ret.bsr_age_ms       = age_ms(last_bsr_update);
+  ret.dl_buffer_age_ms = age_ms(last_dl_buffer_update);
+  if (dl_buffer_bytes > std::numeric_limits<unsigned>::max()) {
+    ret.dl_buffer_age_ms.reset();
+  }
   ret.max_pdsch_distance_ms          = convert_slots_to_ms(data.max_pdsch_distance_slots);
   ret.max_pusch_distance_ms          = convert_slots_to_ms(data.max_pusch_distance_slots);
   ret.nof_pucch_f0f1_invalid_harqs   = data.nof_pucch_f0f1_invalid_harqs;

@@ -539,8 +539,9 @@ TEST_P(e2sm_kpm_du_meas_provider_test, e2sm_kpm_ind_e2_level_prb_metrics)
   uint32_t expected_ul_used_prbs  = tot_ul_prbs / nof_slots;
   uint32_t expected_dl_avail_prbs = nof_prbs - expected_dl_used_prbs;
   uint32_t expected_ul_avail_prbs = nof_prbs - expected_ul_used_prbs;
-  uint32_t expected_dl_tot_prbs   = 100.0 * expected_dl_used_prbs / nof_prbs;
-  uint32_t expected_ul_tot_prbs   = 100.0 * expected_ul_used_prbs / nof_prbs;
+  // Use all PRB-slot observations; the integer PRB/slot display is already rounded down.
+  uint32_t expected_dl_tot_prbs   = uint64_t{100} * tot_dl_prbs / (nof_slots * nof_prbs);
+  uint32_t expected_ul_tot_prbs   = uint64_t{100} * tot_ul_prbs / (nof_slots * nof_prbs);
 
   // Define E2SM_KPM action format 1.
   asn1::e2sm::e2sm_kpm_action_definition_s action_def;

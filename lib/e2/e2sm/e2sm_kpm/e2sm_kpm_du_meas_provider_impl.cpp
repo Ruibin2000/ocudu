@@ -5,6 +5,7 @@
 #include "e2sm_kpm_du_meas_provider_impl.h"
 #include <algorithm>
 #include <cmath>
+#include <limits>
 
 using namespace asn1::e2ap;
 using namespace asn1::e2sm;
@@ -37,7 +38,45 @@ e2sm_kpm_du_meas_provider_impl::e2sm_kpm_du_meas_provider_impl(odu::f1ap_ue_id_t
 {
   // Array of supported metrics.
   supported_metrics.emplace(
-      "CQI", e2sm_kpm_supported_metric_t{NO_LABEL, UNKNOWN_LEVEL, false, &e2sm_kpm_du_meas_provider_impl::get_cqi});
+      "CQI", e2sm_kpm_supported_metric_t{NO_LABEL, UE_LEVEL, false, &e2sm_kpm_du_meas_provider_impl::get_cqi});
+  supported_metrics.emplace("CQI.Samples", e2sm_kpm_supported_metric_t{
+      NO_LABEL, UE_LEVEL, false, &e2sm_kpm_du_meas_provider_impl::get_scheduler_measurement<scheduler_metric::cqi_samples>});
+  supported_metrics.emplace("DL.MCS", e2sm_kpm_supported_metric_t{
+      NO_LABEL, UE_LEVEL, false, &e2sm_kpm_du_meas_provider_impl::get_scheduler_measurement<scheduler_metric::dl_mcs>});
+  supported_metrics.emplace("UL.MCS", e2sm_kpm_supported_metric_t{
+      NO_LABEL, UE_LEVEL, false, &e2sm_kpm_du_meas_provider_impl::get_scheduler_measurement<scheduler_metric::ul_mcs>});
+  supported_metrics.emplace("DL.MCS.Samples", e2sm_kpm_supported_metric_t{
+      NO_LABEL, UE_LEVEL, false, &e2sm_kpm_du_meas_provider_impl::get_scheduler_measurement<scheduler_metric::dl_mcs_samples>});
+  supported_metrics.emplace("UL.MCS.Samples", e2sm_kpm_supported_metric_t{
+      NO_LABEL, UE_LEVEL, false, &e2sm_kpm_du_meas_provider_impl::get_scheduler_measurement<scheduler_metric::ul_mcs_samples>});
+  supported_metrics.emplace("UL.PHR.dB", e2sm_kpm_supported_metric_t{
+      NO_LABEL, UE_LEVEL, false, &e2sm_kpm_du_meas_provider_impl::get_scheduler_measurement<scheduler_metric::phr>});
+  supported_metrics.emplace("UL.PHR.AgeMs", e2sm_kpm_supported_metric_t{
+      NO_LABEL, UE_LEVEL, false, &e2sm_kpm_du_meas_provider_impl::get_scheduler_measurement<scheduler_metric::phr_age>});
+  supported_metrics.emplace("UL.BSR.Bytes", e2sm_kpm_supported_metric_t{
+      NO_LABEL, UE_LEVEL, false, &e2sm_kpm_du_meas_provider_impl::get_scheduler_measurement<scheduler_metric::bsr>});
+  supported_metrics.emplace("UL.BSR.AgeMs", e2sm_kpm_supported_metric_t{
+      NO_LABEL, UE_LEVEL, false, &e2sm_kpm_du_meas_provider_impl::get_scheduler_measurement<scheduler_metric::bsr_age>});
+  supported_metrics.emplace("DL.Buffer.Bytes", e2sm_kpm_supported_metric_t{
+      NO_LABEL, UE_LEVEL, false, &e2sm_kpm_du_meas_provider_impl::get_scheduler_measurement<scheduler_metric::dl_buffer>});
+  supported_metrics.emplace("DL.Buffer.AgeMs", e2sm_kpm_supported_metric_t{
+      NO_LABEL, UE_LEVEL, false, &e2sm_kpm_du_meas_provider_impl::get_scheduler_measurement<scheduler_metric::dl_buffer_age>});
+  supported_metrics.emplace("DL.MAC.Throughput", e2sm_kpm_supported_metric_t{
+      NO_LABEL, UE_LEVEL, false, &e2sm_kpm_du_meas_provider_impl::get_scheduler_measurement<scheduler_metric::dl_brate>});
+  supported_metrics.emplace("UL.MAC.Throughput", e2sm_kpm_supported_metric_t{
+      NO_LABEL, UE_LEVEL, false, &e2sm_kpm_du_meas_provider_impl::get_scheduler_measurement<scheduler_metric::ul_brate>});
+  supported_metrics.emplace("DL.HARQ.Ok", e2sm_kpm_supported_metric_t{
+      NO_LABEL, UE_LEVEL, false, &e2sm_kpm_du_meas_provider_impl::get_scheduler_measurement<scheduler_metric::dl_ok>});
+  supported_metrics.emplace("DL.HARQ.Nok", e2sm_kpm_supported_metric_t{
+      NO_LABEL, UE_LEVEL, false, &e2sm_kpm_du_meas_provider_impl::get_scheduler_measurement<scheduler_metric::dl_nok>});
+  supported_metrics.emplace("UL.CRC.Ok", e2sm_kpm_supported_metric_t{
+      NO_LABEL, UE_LEVEL, false, &e2sm_kpm_du_meas_provider_impl::get_scheduler_measurement<scheduler_metric::ul_ok>});
+  supported_metrics.emplace("UL.CRC.Nok", e2sm_kpm_supported_metric_t{
+      NO_LABEL, UE_LEVEL, false, &e2sm_kpm_du_meas_provider_impl::get_scheduler_measurement<scheduler_metric::ul_nok>});
+  supported_metrics.emplace("PRB.UsageDl.Percent", e2sm_kpm_supported_metric_t{
+      NO_LABEL, UE_LEVEL, false, &e2sm_kpm_du_meas_provider_impl::get_scheduler_measurement<scheduler_metric::dl_prb_usage>});
+  supported_metrics.emplace("PRB.UsageUl.Percent", e2sm_kpm_supported_metric_t{
+      NO_LABEL, UE_LEVEL, false, &e2sm_kpm_du_meas_provider_impl::get_scheduler_measurement<scheduler_metric::ul_prb_usage>});
   supported_metrics.emplace(
       pusch_rsrp_metric_name,
       e2sm_kpm_supported_metric_t{NO_LABEL, UE_LEVEL, false, &e2sm_kpm_du_meas_provider_impl::get_rsrp});
@@ -246,8 +285,8 @@ bool e2sm_kpm_du_meas_provider_impl::is_metric_supported(const asn1::e2sm::meas_
 
   for (auto& metric : supported_metrics) {
     if (strcmp(meas_type.meas_name().to_string().c_str(), metric.first.c_str()) == 0) {
-      // Keep the existing metrics' admission behavior; these vendor metrics have only a UE-level definition.
-      if (metric.first == pusch_rsrp_metric_name || metric.first == pusch_snr_metric_name) {
+      // UE-only metrics must not be admitted at node/cell scope or with unsupported labels.
+      if (metric.second.supported_levels == UE_LEVEL) {
         return level == UE_LEVEL && !cell_scope && has_only_no_label(label);
       }
       return true;
@@ -343,25 +382,117 @@ bool e2sm_kpm_du_meas_provider_impl::handle_no_meas_data_available(
   return false;
 }
 
-bool e2sm_kpm_du_meas_provider_impl::get_cqi(const asn1::e2sm::label_info_list_l          label_info_list,
-                                             const std::vector<asn1::e2sm::ue_id_c>&      ues,
-                                             const std::optional<asn1::e2sm::cgi_c>       cell_global_id,
-                                             std::vector<asn1::e2sm::meas_record_item_c>& items)
+const scheduler_ue_metrics* e2sm_kpm_du_meas_provider_impl::find_ue_metrics(const ue_id_c& ue) const
 {
-  bool meas_collected = false;
-  if (last_ue_metrics.empty()) {
-    return handle_no_meas_data_available(ues, items, asn1::e2sm::meas_record_item_c::types::options::integer);
+  if (ue.type() != ue_id_c::types_opts::gnb_du_ue_id) {
+    return nullptr;
   }
-  scheduler_ue_metrics ue_metrics = last_ue_metrics[0];
+  const auto f1 = int_to_gnb_cu_ue_f1ap_id(ue.gnb_du_ue_id().gnb_cu_ue_f1ap_id);
+  const auto index = f1ap_ue_id_provider.get_ue_index(f1);
+  if (index == du_ue_index_t::INVALID_DU_UE_INDEX) {
+    return nullptr;
+  }
+  // DU indices may be sparse after UE removal; vector positions are not identities.
+  auto found = std::find_if(last_ue_metrics.begin(), last_ue_metrics.end(),
+                            [index](const auto& metric) { return metric.ue_index == index; });
+  return found == last_ue_metrics.end() ? nullptr : &*found;
+}
 
-  meas_record_item_c meas_record_item;
-  meas_record_item.set_integer() = ue_metrics.cqi_stats.get_nof_observations() > 0
-                                       ? static_cast<uint64_t>(std::round(ue_metrics.cqi_stats.get_mean()))
-                                       : 0;
-  items.push_back(meas_record_item);
-  meas_collected = true;
+template <e2sm_kpm_du_meas_provider_impl::scheduler_metric Metric>
+bool e2sm_kpm_du_meas_provider_impl::get_scheduler_measurement(
+    const label_info_list_l label_info_list, const std::vector<ue_id_c>& ues,
+    const std::optional<cgi_c> cell_global_id, std::vector<meas_record_item_c>& items)
+{
+  const bool supported = !ues.empty() && !cell_global_id.has_value() &&
+                         label_info_list.size() == 1 && has_only_no_label(label_info_list[0].meas_label);
+  for (const auto& ue : ues) {
+    meas_record_item_c item;
+    item.set_no_value();
+    const auto* metric = supported ? find_ue_metrics(ue) : nullptr;
+    if (metric != nullptr) {
+      auto real = [&item](double value) {
+        if (std::isfinite(value) && std::abs(value) <= std::numeric_limits<float>::max()) {
+          item.set_real().value = value;
+        }
+      };
+      auto age = [&real](const std::optional<double>& value) {
+        if (value.has_value() && *value >= 0) {
+          real(*value);
+        }
+      };
+      switch (Metric) {
+        case scheduler_metric::cqi:
+          if (metric->cqi_stats.get_nof_observations() > 0) {
+            item.set_integer() = static_cast<uint64_t>(std::round(metric->cqi_stats.get_mean()));
+          }
+          break;
+        case scheduler_metric::cqi_samples:
+          item.set_integer() = metric->cqi_stats.get_nof_observations();
+          break;
+        case scheduler_metric::dl_mcs:
+          if (metric->nof_dl_mcs_reports > 0) {
+            item.set_integer() = metric->dl_mcs.value();
+          }
+          break;
+        case scheduler_metric::ul_mcs:
+          if (metric->nof_ul_mcs_reports > 0) {
+            item.set_integer() = metric->ul_mcs.value();
+          }
+          break;
+        case scheduler_metric::dl_mcs_samples:
+          item.set_integer() = metric->nof_dl_mcs_reports;
+          break;
+        case scheduler_metric::ul_mcs_samples:
+          item.set_integer() = metric->nof_ul_mcs_reports;
+          break;
+        case scheduler_metric::phr:
+          if (metric->last_phr.has_value() && metric->phr_age_ms.has_value()) {
+            real(*metric->last_phr);
+          }
+          break;
+        case scheduler_metric::phr_age: age(metric->phr_age_ms); break;
+        case scheduler_metric::bsr:
+          if (metric->bsr_age_ms.has_value()) {
+            item.set_integer() = metric->bsr;
+          }
+          break;
+        case scheduler_metric::bsr_age: age(metric->bsr_age_ms); break;
+        case scheduler_metric::dl_buffer:
+          if (metric->dl_buffer_age_ms.has_value()) {
+            item.set_integer() = metric->dl_bs;
+          }
+          break;
+        case scheduler_metric::dl_buffer_age: age(metric->dl_buffer_age_ms); break;
+        case scheduler_metric::dl_brate: real(metric->dl_brate_kbps); break;
+        case scheduler_metric::ul_brate: real(metric->ul_brate_kbps); break;
+        case scheduler_metric::dl_ok: item.set_integer() = metric->dl_nof_ok; break;
+        case scheduler_metric::dl_nok: item.set_integer() = metric->dl_nof_nok; break;
+        case scheduler_metric::ul_ok: item.set_integer() = metric->ul_nof_ok; break;
+        case scheduler_metric::ul_nok: item.set_integer() = metric->ul_nof_nok; break;
+        case scheduler_metric::dl_prb_usage:
+        case scheduler_metric::ul_prb_usage: {
+          const bool uplink = Metric == scheduler_metric::ul_prb_usage;
+          const uint64_t slots = uplink ? nof_ul_slots : nof_dl_slots;
+          if (slots > 0 && nof_cell_prbs > 0) {
+            const uint64_t used = uplink ? metric->tot_pusch_prbs_used : metric->tot_pdsch_prbs_used;
+            // Preserve the fractional percentage; the legacy INTEGER getters are unchanged.
+            real(100.0 * used / (slots * nof_cell_prbs));
+          }
+          break;
+        }
+      }
+    }
+    items.push_back(item);
+  }
+  return supported;
+}
 
-  return meas_collected;
+bool e2sm_kpm_du_meas_provider_impl::get_cqi(const label_info_list_l label_info_list,
+                                            const std::vector<ue_id_c>& ues,
+                                            const std::optional<cgi_c> cell_global_id,
+                                            std::vector<meas_record_item_c>& items)
+{
+  return get_scheduler_measurement<scheduler_metric::cqi>(label_info_list, ues, cell_global_id, items);
 }
 
 bool e2sm_kpm_du_meas_provider_impl::get_rsrp(const asn1::e2sm::label_info_list_l          label_info_list,
@@ -493,187 +624,73 @@ bool e2sm_kpm_du_meas_provider_impl::get_prb_avail_ul(const asn1::e2sm::label_in
   return meas_collected;
 }
 
-bool e2sm_kpm_du_meas_provider_impl::get_prb_used_dl(const asn1::e2sm::label_info_list_l          label_info_list,
-                                                     const std::vector<asn1::e2sm::ue_id_c>&      ues,
-                                                     const std::optional<asn1::e2sm::cgi_c>       cell_global_id,
-                                                     std::vector<asn1::e2sm::meas_record_item_c>& items)
+bool e2sm_kpm_du_meas_provider_impl::get_prb_measurement(
+    bool uplink, bool percentage, const label_info_list_l label_info_list,
+    const std::vector<ue_id_c>& ues, std::vector<meas_record_item_c>& items)
 {
-  bool meas_collected = false;
-  if (last_ue_metrics.empty()) {
-    return handle_no_meas_data_available(ues, items, asn1::e2sm::meas_record_item_c::types::options::integer);
+  if (label_info_list.size() > 1 ||
+      (label_info_list.size() == 1 && !label_info_list[0].meas_label.no_label_present)) {
+    return false;
   }
-  if ((label_info_list.size() > 1 or
-       (label_info_list.size() == 1 and not label_info_list[0].meas_label.no_label_present))) {
-    logger.debug("Metric: RRU.PrbUsedDl supports only NO_LABEL label.");
-    return meas_collected;
+  if (ues.empty() && last_ue_metrics.empty()) {
+    return handle_no_meas_data_available(ues, items, meas_record_item_c::types::integer);
   }
-
-  if (ues.empty()) {
-    double dl_prbs_used = std::accumulate(last_ue_metrics.begin(),
-                                          last_ue_metrics.end(),
-                                          0,
-                                          [](size_t sum, const scheduler_ue_metrics& metric) {
-                                            return sum + metric.tot_pdsch_prbs_used;
-                                          }) /
-                          nof_dl_slots;
-    meas_record_item_c meas_record_item;
-    meas_record_item.set_integer() = dl_prbs_used;
-    items.push_back(meas_record_item);
-    meas_collected = true;
-  }
-
-  for (auto& ue : ues) {
-    gnb_cu_ue_f1ap_id_t gnb_cu_ue_f1ap_id = int_to_gnb_cu_ue_f1ap_id(ue.gnb_du_ue_id().gnb_cu_ue_f1ap_id);
-    uint32_t            ue_idx            = f1ap_ue_id_provider.get_ue_index(gnb_cu_ue_f1ap_id);
-    meas_record_item_c  meas_record_item;
-    if (ue_idx != du_ue_index_t::INVALID_DU_UE_INDEX && ue_idx < last_ue_metrics.size()) {
-      unsigned ue_mean_dl_prbs_used = nof_dl_slots > 0 ? last_ue_metrics[ue_idx].tot_pdsch_prbs_used / nof_dl_slots : 0;
-      meas_record_item.set_integer() = ue_mean_dl_prbs_used;
-    } else {
-      meas_record_item.set_no_value();
+  const uint64_t slots = uplink ? nof_ul_slots : nof_dl_slots;
+  auto record = [this, slots, percentage](uint64_t used) {
+    meas_record_item_c item;
+    item.set_no_value();
+    if (slots > 0 && (!percentage || nof_cell_prbs > 0)) {
+      // Multiply before dividing: do not truncate the PRB/slot mean first.
+      item.set_integer() = percentage ? used * 100U / (slots * nof_cell_prbs) : used / slots;
     }
-    items.push_back(meas_record_item);
-    meas_collected = true;
+    return item;
+  };
+  if (ues.empty()) {
+    uint64_t used = 0;
+    for (const auto& metric : last_ue_metrics) {
+      used += uplink ? metric.tot_pusch_prbs_used : metric.tot_pdsch_prbs_used;
+    }
+    items.push_back(record(used));
   }
-
-  return meas_collected;
+  for (const auto& ue : ues) {
+    const auto* metric = find_ue_metrics(ue);
+    if (metric != nullptr) {
+      items.push_back(record(uplink ? metric->tot_pusch_prbs_used : metric->tot_pdsch_prbs_used));
+    } else {
+      meas_record_item_c item;
+      item.set_no_value();
+      items.push_back(item);
+    }
+  }
+  return true;
 }
 
-bool e2sm_kpm_du_meas_provider_impl::get_prb_used_ul(const asn1::e2sm::label_info_list_l          label_info_list,
-                                                     const std::vector<asn1::e2sm::ue_id_c>&      ues,
-                                                     const std::optional<asn1::e2sm::cgi_c>       cell_global_id,
-                                                     std::vector<asn1::e2sm::meas_record_item_c>& items)
+bool e2sm_kpm_du_meas_provider_impl::get_prb_used_dl(
+    const label_info_list_l label_info_list, const std::vector<ue_id_c>& ues,
+    const std::optional<cgi_c> cell_global_id, std::vector<meas_record_item_c>& items)
 {
-  bool meas_collected = false;
-  if (last_ue_metrics.empty()) {
-    return handle_no_meas_data_available(ues, items, asn1::e2sm::meas_record_item_c::types::options::integer);
-  }
-  if ((label_info_list.size() > 1 or
-       (label_info_list.size() == 1 and not label_info_list[0].meas_label.no_label_present))) {
-    logger.debug("Metric: RRU.PrbUsedUl supports only NO_LABEL label.");
-    return meas_collected;
-  }
-
-  if (ues.empty()) {
-    double ul_prbs_used = std::accumulate(last_ue_metrics.begin(),
-                                          last_ue_metrics.end(),
-                                          0,
-                                          [](size_t sum, const scheduler_ue_metrics& metric) {
-                                            return sum + metric.tot_pusch_prbs_used;
-                                          }) /
-                          nof_ul_slots;
-    meas_record_item_c meas_record_item;
-    meas_record_item.set_integer() = ul_prbs_used;
-    items.push_back(meas_record_item);
-    meas_collected = true;
-  }
-
-  for (auto& ue : ues) {
-    gnb_cu_ue_f1ap_id_t gnb_cu_ue_f1ap_id = int_to_gnb_cu_ue_f1ap_id(ue.gnb_du_ue_id().gnb_cu_ue_f1ap_id);
-    uint32_t            ue_idx            = f1ap_ue_id_provider.get_ue_index(gnb_cu_ue_f1ap_id);
-    meas_record_item_c  meas_record_item;
-    if (ue_idx != du_ue_index_t::INVALID_DU_UE_INDEX && ue_idx < last_ue_metrics.size()) {
-      unsigned ue_mean_ul_prbs_used = nof_ul_slots > 0 ? last_ue_metrics[ue_idx].tot_pusch_prbs_used / nof_ul_slots : 0;
-      meas_record_item.set_integer() = ue_mean_ul_prbs_used;
-    } else {
-      meas_record_item.set_no_value();
-    }
-    items.push_back(meas_record_item);
-    meas_collected = true;
-  }
-
-  return meas_collected;
+  return get_prb_measurement(false, false, label_info_list, ues, items);
 }
 
-bool e2sm_kpm_du_meas_provider_impl::get_prb_use_perc_dl(const asn1::e2sm::label_info_list_l          label_info_list,
-                                                         const std::vector<asn1::e2sm::ue_id_c>&      ues,
-                                                         const std::optional<asn1::e2sm::cgi_c>       cell_global_id,
-                                                         std::vector<asn1::e2sm::meas_record_item_c>& items)
+bool e2sm_kpm_du_meas_provider_impl::get_prb_used_ul(
+    const label_info_list_l label_info_list, const std::vector<ue_id_c>& ues,
+    const std::optional<cgi_c> cell_global_id, std::vector<meas_record_item_c>& items)
 {
-  bool meas_collected = false;
-  if (last_ue_metrics.empty()) {
-    return handle_no_meas_data_available(ues, items, asn1::e2sm::meas_record_item_c::types::options::integer);
-  }
-  if ((label_info_list.size() > 1 or
-       (label_info_list.size() == 1 and not label_info_list[0].meas_label.no_label_present))) {
-    logger.debug("Metric: RRU.PrbTotDl supports only NO_LABEL label.");
-    return meas_collected;
-  }
-
-  if (ues.empty()) {
-    double mean_dl_prbs_used = std::accumulate(last_ue_metrics.begin(),
-                                               last_ue_metrics.end(),
-                                               0,
-                                               [](size_t sum, const scheduler_ue_metrics& metric) {
-                                                 return sum + metric.tot_pdsch_prbs_used;
-                                               }) /
-                               nof_dl_slots;
-    meas_record_item_c meas_record_item;
-    meas_record_item.set_integer() = mean_dl_prbs_used * 100 / nof_cell_prbs;
-    items.push_back(meas_record_item);
-    meas_collected = true;
-  }
-
-  for (auto& ue : ues) {
-    gnb_cu_ue_f1ap_id_t gnb_cu_ue_f1ap_id = int_to_gnb_cu_ue_f1ap_id(ue.gnb_du_ue_id().gnb_cu_ue_f1ap_id);
-    uint32_t            ue_idx            = f1ap_ue_id_provider.get_ue_index(gnb_cu_ue_f1ap_id);
-    meas_record_item_c  meas_record_item;
-    if (ue_idx != du_ue_index_t::INVALID_DU_UE_INDEX && ue_idx < last_ue_metrics.size()) {
-      unsigned ue_mean_dl_prbs_used = nof_dl_slots > 0 ? last_ue_metrics[ue_idx].tot_pdsch_prbs_used / nof_dl_slots : 0;
-      meas_record_item.set_integer() = ue_mean_dl_prbs_used * 100 / nof_cell_prbs;
-    } else {
-      meas_record_item.set_no_value();
-    }
-    items.push_back(meas_record_item);
-    meas_collected = true;
-  }
-
-  return meas_collected;
+  return get_prb_measurement(true, false, label_info_list, ues, items);
 }
 
-bool e2sm_kpm_du_meas_provider_impl::get_prb_use_perc_ul(const asn1::e2sm::label_info_list_l          label_info_list,
-                                                         const std::vector<asn1::e2sm::ue_id_c>&      ues,
-                                                         const std::optional<asn1::e2sm::cgi_c>       cell_global_id,
-                                                         std::vector<asn1::e2sm::meas_record_item_c>& items)
+bool e2sm_kpm_du_meas_provider_impl::get_prb_use_perc_dl(
+    const label_info_list_l label_info_list, const std::vector<ue_id_c>& ues,
+    const std::optional<cgi_c> cell_global_id, std::vector<meas_record_item_c>& items)
 {
-  bool meas_collected = false;
-  if (last_ue_metrics.empty()) {
-    return handle_no_meas_data_available(ues, items, asn1::e2sm::meas_record_item_c::types::options::integer);
-  }
-  if ((label_info_list.size() > 1 or
-       (label_info_list.size() == 1 and not label_info_list[0].meas_label.no_label_present))) {
-    logger.debug("Metric: RRU.PrbTotUl supports only NO_LABEL label.");
-    return meas_collected;
-  }
-  if (ues.empty()) {
-    double mean_ul_prbs_used = std::accumulate(last_ue_metrics.begin(),
-                                               last_ue_metrics.end(),
-                                               0,
-                                               [](size_t sum, const scheduler_ue_metrics& metric) {
-                                                 return sum + metric.tot_pusch_prbs_used;
-                                               }) /
-                               nof_ul_slots;
-    meas_record_item_c meas_record_item;
-    meas_record_item.set_integer() = mean_ul_prbs_used * 100 / nof_cell_prbs;
-    items.push_back(meas_record_item);
-    meas_collected = true;
-  }
+  return get_prb_measurement(false, true, label_info_list, ues, items);
+}
 
-  for (auto& ue : ues) {
-    gnb_cu_ue_f1ap_id_t gnb_cu_ue_f1ap_id = int_to_gnb_cu_ue_f1ap_id(ue.gnb_du_ue_id().gnb_cu_ue_f1ap_id);
-    uint32_t            ue_idx            = f1ap_ue_id_provider.get_ue_index(gnb_cu_ue_f1ap_id);
-    meas_record_item_c  meas_record_item;
-    if (ue_idx != du_ue_index_t::INVALID_DU_UE_INDEX && ue_idx < last_ue_metrics.size()) {
-      unsigned ue_mean_ul_prbs_used = nof_ul_slots > 0 ? last_ue_metrics[ue_idx].tot_pusch_prbs_used / nof_ul_slots : 0;
-      meas_record_item.set_integer() = ue_mean_ul_prbs_used * 100 / nof_cell_prbs;
-    } else {
-      meas_record_item.set_no_value();
-    }
-    items.push_back(meas_record_item);
-    meas_collected = true;
-  }
-
-  return meas_collected;
+bool e2sm_kpm_du_meas_provider_impl::get_prb_use_perc_ul(
+    const label_info_list_l label_info_list, const std::vector<ue_id_c>& ues,
+    const std::optional<cgi_c> cell_global_id, std::vector<meas_record_item_c>& items)
+{
+  return get_prb_measurement(true, true, label_info_list, ues, items);
 }
 bool e2sm_kpm_du_meas_provider_impl::get_delay_ul(const asn1::e2sm::label_info_list_l          label_info_list,
                                                   const std::vector<asn1::e2sm::ue_id_c>&      ues,

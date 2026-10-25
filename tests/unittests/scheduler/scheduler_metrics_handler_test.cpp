@@ -217,12 +217,16 @@ TEST_F(scheduler_metrics_handler_tester, compute_mcs)
   ASSERT_EQ(ue_metrics.rnti, to_rnti(0x4601));
   ASSERT_EQ(ue_metrics.dl_mcs, dl_mcs);
   ASSERT_EQ(ue_metrics.ul_mcs, ul_mcs);
+  ASSERT_GT(ue_metrics.nof_dl_mcs_reports, 0U);
+  ASSERT_GT(ue_metrics.nof_ul_mcs_reports, 0U);
 
   this->get_next_metric();
   ue_metrics = metrics_notif.last_report.ue_metrics[0];
   ASSERT_EQ(ue_metrics.rnti, to_rnti(0x4601));
   ASSERT_EQ(ue_metrics.dl_mcs, 0) << "DL MCS not reset";
   ASSERT_EQ(ue_metrics.ul_mcs, 0) << "UL MCS not reset";
+  ASSERT_EQ(ue_metrics.nof_dl_mcs_reports, 0U);
+  ASSERT_EQ(ue_metrics.nof_ul_mcs_reports, 0U);
 }
 
 TEST_F(scheduler_metrics_handler_tester, compute_bitrate)
@@ -370,4 +374,80 @@ TEST_F(scheduler_metrics_handler_tester, falcon_rf_missing_optional_values_do_no
   get_next_metric();
   EXPECT_EQ(metrics_notif.last_report.ue_metrics[0].nof_pusch_snr_reports, 0U);
   EXPECT_EQ(metrics_notif.last_report.ue_metrics[0].pusch_rsrp_db, -std::numeric_limits<float>::infinity());
+}
+
+TEST_F(scheduler_metrics_handler_tester, persistent_indications_have_validity_and_monotonic_age)
+{
+  get_next_metric();
+  const auto& initial = metrics_notif.last_report.ue_metrics[0];
+  EXPECT_FALSE(initial.phr_age_ms.has_value());
+  EXPECT_FALSE(initial.bsr_age_ms.has_value());
+  EXPECT_FALSE(initial.dl_buffer_age_ms.has_value());
+
+  ul_bsr_indication_message bsr{};
+  bsr.ue_index = test_ue_index;
+  bsr.reported_lcgs.push_back({lcg_id_t{0}, 1000});
+  bsr.reported_lcgs.push_back({lcg_id_t{1}, 250});
+  metrics.handle_ul_bsr_indication(bsr);
+  dl_buffer_state_indication_message buffer{};
+  buffer.ue_index = test_ue_index;
+  buffer.lcid = lcid_t{4};
+  buffer.bs = 4096;
+  metrics.handle_dl_buffer_state_indication(buffer);
+  ul_phr_indication_message phr{};
+  phr.ue_index = test_ue_index;
+  phr.slot_rx = (next_sl_tx - 1).without_hyper_sfn();
+  phr.phr.set_se_phr({SERVING_PCELL_IDX, ph_field_type_t::type1, ph_db_range{-5, -3}, p_cmax_dbm_range{20, 22}});
+  metrics.handle_ul_phr_indication(phr);
+  get_next_metric();
+  auto first = metrics_notif.last_report.ue_metrics[0];
+  ASSERT_EQ(first.bsr, 1250U);
+  ASSERT_EQ(first.dl_bs, 4096U);
+  ASSERT_EQ(first.last_phr, -4);
+  ASSERT_TRUE(first.bsr_age_ms.has_value());
+  ASSERT_TRUE(first.phr_age_ms.has_value());
+  ASSERT_TRUE(first.dl_buffer_age_ms.has_value());
+  get_next_metric();
+  const auto& next = metrics_notif.last_report.ue_metrics[0];
+  EXPECT_EQ(next.bsr, first.bsr);
+  EXPECT_EQ(next.last_phr, first.last_phr);
+  EXPECT_GE(next.bsr_age_ms.value(), first.bsr_age_ms.value());
+  EXPECT_GE(next.phr_age_ms.value(), first.phr_age_ms.value());
+  EXPECT_GE(next.dl_buffer_age_ms.value(), first.dl_buffer_age_ms.value());
+
+  bsr.reported_lcgs.clear();
+  bsr.reported_lcgs.push_back({lcg_id_t{0}, 0});
+  metrics.handle_ul_bsr_indication(bsr);
+  get_next_metric();
+  EXPECT_EQ(metrics_notif.last_report.ue_metrics[0].bsr, 0U);
+  EXPECT_TRUE(metrics_notif.last_report.ue_metrics[0].bsr_age_ms.has_value());
+
+  metrics.handle_ue_deletion(test_ue_index);
+  metrics.handle_ue_creation(test_ue_index, to_rnti(0x4601), pci_t{0});
+  get_next_metric();
+  EXPECT_FALSE(metrics_notif.last_report.ue_metrics[0].bsr_age_ms.has_value());
+  EXPECT_FALSE(metrics_notif.last_report.ue_metrics[0].phr_age_ms.has_value());
+}
+
+TEST_F(scheduler_metrics_handler_tester, oversized_buffer_totals_are_unavailable_instead_of_wrapping)
+{
+  ul_bsr_indication_message bsr{};
+  bsr.ue_index = test_ue_index;
+  bsr.reported_lcgs.push_back({lcg_id_t{0}, std::numeric_limits<uint32_t>::max()});
+  metrics.handle_ul_bsr_indication(bsr);
+  get_next_metric();
+  EXPECT_EQ(metrics_notif.last_report.ue_metrics[0].bsr, std::numeric_limits<uint32_t>::max());
+  EXPECT_TRUE(metrics_notif.last_report.ue_metrics[0].bsr_age_ms.has_value());
+  bsr.reported_lcgs.push_back({lcg_id_t{1}, 1});
+  metrics.handle_ul_bsr_indication(bsr);
+  for (unsigned channel : {4U, 5U}) {
+    dl_buffer_state_indication_message buffer{};
+    buffer.ue_index = test_ue_index;
+    buffer.lcid = static_cast<lcid_t>(channel);
+    buffer.bs = std::numeric_limits<unsigned>::max();
+    metrics.handle_dl_buffer_state_indication(buffer);
+  }
+  get_next_metric();
+  EXPECT_FALSE(metrics_notif.last_report.ue_metrics[0].bsr_age_ms.has_value());
+  EXPECT_FALSE(metrics_notif.last_report.ue_metrics[0].dl_buffer_age_ms.has_value());
 }

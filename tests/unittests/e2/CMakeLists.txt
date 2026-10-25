@@ -60,6 +60,11 @@ target_link_libraries(e2sm_kpm_meas_provider_metrics_test ocudulog ocudu_e2 e2ap
 target_include_directories(e2sm_kpm_meas_provider_metrics_test PRIVATE ${CMAKE_SOURCE_DIR})
 gtest_discover_tests(e2sm_kpm_meas_provider_metrics_test)
 
+add_executable(e2sm_kpm_du_expansion_test e2sm_kpm_du_expansion_test.cpp)
+target_link_libraries(e2sm_kpm_du_expansion_test ocudulog ocudu_e2 e2ap_asn1 ocudu_support e2_test_helpers GTest::gtest GTest::gtest_main)
+target_include_directories(e2sm_kpm_du_expansion_test PRIVATE ${CMAKE_SOURCE_DIR})
+gtest_discover_tests(e2sm_kpm_du_expansion_test)
+
 add_executable(e2sm_kpm_test e2sm_kpm_test.cpp)
 target_link_libraries(e2sm_kpm_test ocudulog ocudu_e2 e2ap_asn1 ocudu_pcap ocudu_gateway ocudu_support e2_test_helpers GTest::gtest GTest::gtest_main
 )

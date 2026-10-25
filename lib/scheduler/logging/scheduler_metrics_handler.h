@@ -101,6 +101,9 @@ class cell_metrics_handler final : public sched_metrics_ue_configurator
     unsigned                               last_bsr = 0;
     std::optional<int>                     last_phr;
     std::array<unsigned, MAX_NOF_RB_LCIDS> last_dl_bs{0};
+    std::optional<std::chrono::steady_clock::time_point> last_phr_update;
+    std::optional<std::chrono::steady_clock::time_point> last_bsr_update;
+    std::optional<std::chrono::steady_clock::time_point> last_dl_buffer_update;
     std::optional<float>                   last_dl_olla;
     std::optional<float>                   last_ul_olla;
     non_persistent_data                    data;

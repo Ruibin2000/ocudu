@@ -79,6 +79,21 @@ private:
   bool check_e2sm_kpm_metrics_definitions(span<const e2sm_kpm_metric_t> metrics_defs);
 
   // Helper functions.
+  enum class scheduler_metric {
+    cqi, cqi_samples, dl_mcs, ul_mcs, dl_mcs_samples, ul_mcs_samples,
+    phr, phr_age, bsr, bsr_age, dl_buffer, dl_buffer_age,
+    dl_brate, ul_brate, dl_ok, dl_nok, ul_ok, ul_nok, dl_prb_usage, ul_prb_usage
+  };
+  const scheduler_ue_metrics* find_ue_metrics(const asn1::e2sm::ue_id_c& ue) const;
+  template <scheduler_metric Metric>
+  bool get_scheduler_measurement(const asn1::e2sm::label_info_list_l          label_info_list,
+                                 const std::vector<asn1::e2sm::ue_id_c>&      ues,
+                                 const std::optional<asn1::e2sm::cgi_c>       cell_global_id,
+                                 std::vector<asn1::e2sm::meas_record_item_c>& items);
+  bool get_prb_measurement(bool uplink, bool percentage,
+                           const asn1::e2sm::label_info_list_l          label_info_list,
+                           const std::vector<asn1::e2sm::ue_id_c>&      ues,
+                           std::vector<asn1::e2sm::meas_record_item_c>& items);
   float bytes_to_kbits(float value);
   bool  handle_no_meas_data_available(const std::vector<asn1::e2sm::ue_id_c>&        ues,
                                       std::vector<asn1::e2sm::meas_record_item_c>&   items,
@@ -112,10 +127,10 @@ private:
 
   ocudulog::basic_logger&                            logger;
   odu::f1ap_ue_id_translator&                        f1ap_ue_id_provider;
-  unsigned                                           nof_cell_prbs;
-  unsigned                                           nof_dl_slots;
-  unsigned                                           nof_ul_slots;
-  unsigned                                           nof_ded_cell_preambles;
+  unsigned                                           nof_cell_prbs = 0;
+  unsigned                                           nof_dl_slots = 0;
+  unsigned                                           nof_ul_slots = 0;
+  unsigned                                           nof_ded_cell_preambles = 0;
   std::vector<scheduler_ue_metrics>                  last_ue_metrics;
   std::map<uint16_t, std::deque<rlc_metrics>>        ue_aggr_rlc_metrics;
   std::chrono::system_clock::time_point              last_rlc_metrics_clear_time = std::chrono::system_clock::now();

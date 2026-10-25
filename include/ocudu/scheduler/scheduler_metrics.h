@@ -100,6 +100,15 @@ struct scheduler_ue_metrics {
   sample_statistics<unsigned> ul_ri_stats;
   /// Number of available PUSCH SNR reports in this window. A measured 0 dB is valid.
   unsigned nof_pusch_snr_reports = 0;
+  /// MCS observation counts distinguish a measured index zero from no grants.
+  unsigned nof_dl_mcs_reports = 0;
+  unsigned nof_ul_mcs_reports = 0;
+  /// Age of the last received indication at snapshot creation, in milliseconds.
+  /// Absence means no indication was observed for this UE. These are not window means.
+  std::optional<double> phr_age_ms;
+  std::optional<double> bsr_age_ms;
+  /// Age of the newest DL logical-channel buffer indication, not of every channel.
+  std::optional<double> dl_buffer_age_ms;
 };
 
 /// \brief Event that occurred in the cell of the scheduler.
